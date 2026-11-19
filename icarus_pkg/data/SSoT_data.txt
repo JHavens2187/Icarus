@@ -1,0 +1,60 @@
+================================================================================
+ICARUS v3.4 ARCHITECTURE SPECIFICATION: DATA & TEMPLATES (icarus_pkg/data/)
+================================================================================
+Purpose:
+Stores static, version-controlled astrophysical reference tables: the vacuum
+emission-line catalog, pre-cleaned empirical UV/Optical Fe II pseudo-continuum
+templates, and instrument dispersion curves R(lambda).
+
+--------------------------------------------------------------------------------
+FILES & SUBDIRECTORIES TO IMPLEMENT IN THIS DIRECTORY
+--------------------------------------------------------------------------------
+
+1. make_line_list.py & icarus_master_lines.fits
+   - Role: Generator script and compiled binary FITS table of rest-frame vacuum
+     atomic transitions.
+   - Schema Improvement (v3.4):
+     * Drops the redundant manual `complex` string column (since
+       `SpectralPreparer.group_into_complexes` groups transitions dynamically by
+       wavelength proximity).
+     * Uses a clean 4-column schema:
+       1) `name` (str): Standardized identifier (e.g., `O_III_5007`, `H_alpha`,
+          `Pa_beta`, `He_I_10830`, `S_III_9531`, `Ar_III_7136`).
+       2) `rest_wavelength` (float64, unit=Angstrom): Strict vacuum wavelength.
+       3) `profile_type` (str): `"broad_and_narrow"` (permitted transitions) or
+          `"narrow"` (forbidden transitions).
+       4) `outflow_candidate` (bool): `True` for primary wind transitions
+          (`O_III_4959`, `O_III_5007`), `False` otherwise.
+   - Complete Line Coverage:
+     * UV: `Ly_beta`, `Ly_alpha`, `N_V_1240`, `Si_IV_1397`, `O_IV_1402`,
+       `C_IV_1548`, `C_IV_1551`, `He_II_1640`, `O_III_1661`, `O_III_1666`,
+       `C_III_1909`, `Mg_II_2796`, `Mg_II_2803`, `Mg_V_2928`, `Ne_V_3346`,
+       `Ne_V_3426`.
+     * Optical: `O_II_3726`, `O_II_3729`, `Ne_III_3869`, `H_zeta`, `He_I_3889`,
+       `Ne_III_3967`, `H_epsilon`, `H_delta`, `H_gamma`, `O_III_4363`,
+       `He_I_4471`, `He_II_4686`, `H_beta`, `O_III_4959`, `O_III_5007`,
+       `He_I_5876`, `O_I_6300`, `O_I_6364`, `N_II_6548`, `H_alpha`,
+       `N_II_6583`, `S_II_6716`, `S_II_6731`.
+     * Near-IR & Mid-IR: `Ar_III_7136`, `O_II_7320`, `O_II_7330`, `S_III_9069`,
+       `S_III_9531`, `Pa_epsilon` (9548.6), `Pa_delta` (10052.1), `He_I_10830`,
+       `Pa_gamma` (10941.1), `Fe_II_12570`, `Pa_beta` (12821.6), `Pa_alpha`
+       (18756.1), `Br_delta`, `Br_gamma`, `Br_beta`, `Br_alpha`, `Pf_gamma`,
+       `Pf_beta`, `Pf_alpha`, `Hu_gamma`, `Hu_beta`, `Hu_alpha`.
+
+2. templates/ (Subdirectory for Fe II & Continuum Templates)
+   - `build_feii_templates.py`: Utility script that ingests literature tables
+     or analytic multiplet lists, excises narrow H_beta/[O III] contamination,
+     converts air wavelengths to vacuum, resamples onto a uniform log-wavelength
+     grid (`dv = 10.0 km/s`), and zero-pads edges by 5000 km/s.
+   - `feii_uv_vw01_tz06.fits`: Combined Vestergaard & Wilkes (2001) + Tsuzuki
+     et al. (2006) UV Fe II template covering 1200 - 3500 A.
+   - `feii_opt_bg92.fits`: Boroson & Green (1992) I Zw 1 Optical Fe II template
+     covering 3500 - 7500 A (`intrinsic_sigma_kms = 382.19` stored in header).
+
+3. dispersion/ (Subdirectory for Instrument Resolution Curves)
+   - Stores 2-column FITS tables (`WAVELENGTH_UM`, `R`) for wavelength-dependent
+     instrumental resolving power:
+     * `jwst_nirspec_prism_disp.fits` (R ~ 30 to 300 across 0.6 - 5.3 um)
+     * `jwst_nirspec_medium_disp.fits` (R ~ 1000 across G140M/G235M/G395M)
+     * `jwst_nirspec_high_disp.fits` (R ~ 2700 across G140H/G235H/G395H)
+================================================================================

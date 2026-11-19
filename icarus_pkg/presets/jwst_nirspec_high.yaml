@@ -1,0 +1,28 @@
+# ==============================================================================
+# ICARUS v3.4 Preset: JWST NIRSpec High-Resolution Gratings (R ~ 2700)
+# ==============================================================================
+globals:
+  line_table: "icarus_master_lines.fits"
+  lines: "all"
+  wave_unit: "um"
+  flux_unit: "1e-20 erg / (cm2 s AA)"
+  resolution: "110.0 km / s"
+  dispersion_curve: "jwst_nirspec_high_disp.fits"
+  column_mapping:
+    wave: "WAVE"
+    flux: "FLUX"
+    err: "ERR"
+  H0: 70.0
+  Om0: 0.3
+  fitting:
+    cont_type: "powerlaw_feii"
+    continuum_degree: 2
+    enable_feii: true
+    cont_width: "400.0 Angstrom"
+    center: "constrained"
+    snr_threshold: 3.0
+    min_sigma: "20.0 km / s"
+    max_sigma: "400.0 km / s"
+    broad_kinematics:
+      min_sigma: "800.0 km / s"
+      max_sigma: "8000.0 km / s"

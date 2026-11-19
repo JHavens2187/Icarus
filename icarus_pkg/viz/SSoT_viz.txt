@@ -1,0 +1,102 @@
+================================================================================
+ICARUS v3.4 ARCHITECTURE SPECIFICATION: VISUALIZATION ENGINE (icarus_pkg/viz/)
+================================================================================
+Purpose:
+Renders the publication-grade 5-panel diagnostic figure adhering to the Havens
+Aesthetic Standard and Section 3 of the ICARUS v3.4 Roadmap. Enforces
+topological continuity (zero broken-axis slashes), strategic visual hierarchy,
+and portable math-mode LaTeX typography.
+
+--------------------------------------------------------------------------------
+FILES TO IMPLEMENT IN THIS DIRECTORY
+--------------------------------------------------------------------------------
+
+1. style.py (Evolved from v3.3 matplotlibparams.py)
+   - Role: Global Matplotlib rcParams and color palette definitions.
+   - Key Specifications:
+     * Enforces `matplotlib.use("Agg")` and `plt.rc("text", usetex=False)` with
+       `mathtext.fontset = "stixsans"` for 100% crash-free portability across
+       Linux servers and macOS workstations.
+     * Defines the official ICARUS hex palette:
+       - `COLOR_DATA_RAW = "#34495E"` (Muted Slate background step)
+       - `COLOR_TOTAL_FIT = "#E63946"` (High-contrast Crimson total model)
+       - `COLOR_CONT_PL = "#118AB2"` (Ocean Blue dashed power-law continuum)
+       - `COLOR_CONT_FEII = "#F4A261"` (Warm Gold shaded Fe II pseudo-continuum)
+       - `COLOR_NARROW = "#06D6A0"` (Emerald Green narrow core)
+       - `COLOR_BROAD = "#FF9F1C"` (Amber Orange dash-dot broad BLR wing)
+       - `COLOR_OUTFLOW = "#7209B7"` (Royal Violet dotted outflow wing)
+       - `COLOR_LIMIT = "#6C757D"` (Neutral Gray 3-sigma upper limit marker)
+
+2. typography.py (Extracted from v3.3 plotting.py)
+   - Role: Ion string parser and spatial label de-crowding engine.
+   - Key Specifications:
+     * `format_latex_ion(raw_name, is_limit=False)`:
+       - Converts Hydrogen series (`Ly`, `H`, `Pa`, `Br`, `Pf`, `Hu`) to native
+         mathtext (`$\mathrm{H}\alpha$`, `$\mathrm{Pa}\beta$`).
+       - Converts forbidden ions (`O`, `N`, `S`, `Ne`, `Ar`, `C III`) to
+         bracketed notation (`$[\mathrm{O\,III}]\,\lambda 5007$`).
+       - Converts permitted ions (`C IV`, `Mg II`, `He I`, `He II`) to unbracketed
+         notation (`$\mathrm{Mg\,II}\,\lambda 2796$`).
+     * `decrowd_annotations(annotations, x_min, x_max, log_scale=True)`:
+       - Sorts detected lines by SNR descending and enforces minimum separation
+         in log-wavelength or velocity space so doublet labels never collide.
+
+3. bpt.py (New for v3.4)
+   - Role: Renders `[PANEL 4] BPT Emission Diagnostic`.
+   - Key Specifications:
+     * Plots the canonical Baldwin-Phillips-Terlevich plane:
+       X-axis: `log10([N II] 6583 / H_alpha)` in [-2.0, +0.8]
+       Y-axis: `log10([O III] 5007 / H_beta)` in [-1.2, +1.5]
+     * Draws and labels the three standard demarcation boundaries:
+       1) Kewley et al. (2001) extreme starburst curve (solid crimson):
+          `y = 0.61 / (x - 0.47) + 1.19` (for x < 0.47)
+       2) Kauffmann et al. (2003) pure star-forming curve (dashed blue):
+          `y = 0.61 / (x - 0.05) + 1.30` (for x < 0.05)
+       3) Schawinski et al. (2007) Seyfert / LINER division (dotted slate):
+          `y = 1.05 * x + 0.45` (above Kewley line)
+     * Shades background regions subtly (`SF`, `Composite`, `Seyfert`, `LINER`).
+     * Plots the target galaxy as a high-contrast bordered jewel marker (`*` or
+       `D` with black edge and crimson fill) if both ratios are detected, or
+       renders directional 3-sigma limit arrows (`dx`, `dy`) if `[N II]` or
+       `[O III]` is an upper limit.
+     * High-z Fallback: If `H_alpha` is off-detector (z > 4), dynamically
+       switches to the `[Ne III] 3869 / [O II] 3727` vs. `[O III] 5007 / H_beta`
+       (OHNO) high-z excitation diagram so Panel 4 is never wasted space.
+
+4. plotter.py (Rebuilt from v3.3 plotting.py)
+   - Role: Master 5-panel `GridSpec` layout builder (`DiagnosticPlotter`).
+   - Layout Geometry (`figsize=(18, 12)`):
+     * `[PANEL 1] Full Spectrum & Continuum Decomposition` (Top row, full width):
+       - Continuous logarithmic wavelength axis (`ax.set_xscale("log")`) with
+         scalar tick labels (`ScalarFormatter`) eliminating wide NIR deserts
+         without broken-axis slashes.
+       - Layers: 1-sigma uncertainty ribbon, observed flux step, Stage 1
+         power-law continuum, shaded Fe II pseudo-continuum template, shaded
+         complex integration windows, total complex fits, and vertical dashed
+         lines + labels strictly for DETECTED lines (`not is_upper_limit`).
+     * `[PANEL 2] & [PANEL 3] Featured Kinematic Complexes` (Middle row, left &
+       right columns):
+       - Selected programmatically via `_select_featured_panels()` ranking:
+         (1) `comp.in_bounds == True`, (2) `detected_lines >= 1`,
+         (3) `priority_lines` rank (`H_beta+[O III]` and `H_alpha+[N II]` first,
+         falling back to `C IV`, `Mg II`, `Pa_beta`, `He I 10830`), (4) peak SNR.
+       - Bottom X-axis in relative velocity space (`Delta v` in km/s) centered
+         on the primary line's rest wavelength; top twin axis
+         (`secondary_xaxis`) in rest-frame Angstroms.
+       - Decomposes and plots: Local + Fe II continuum, Narrow Core, Broad BLR
+         wing (shaded), Outflow wing (shaded), and Total Fit.
+     * `[PANEL 2R] & [PANEL 3R] Normalized Residual Pull Strips` (Directly
+       beneath Panels 2 & 3, `height_ratio = 0.32`, shared velocity X-axis):
+       - Plots unitless pull `chi_i = (F_obs - F_model) / F_err` for unmasked
+         pixels.
+       - Y-axis locked to `[-5, +5]` with horizontal shaded `+/- 1 sigma` (dark)
+         and `+/- 3 sigma` (light) ribbons.
+     * `[PANEL 4] BPT Emission Diagnostic` (Bottom row, left column):
+       - Invokes `bpt.py` to map the target on the Kewley/Kauffmann plane.
+     * `[PANEL 5] Virial & Accretion Card` (Bottom row, right column):
+       - Clean executive readout table displaying: Target ID, `z_sys`,
+         `log(M_BH / M_sun)` + calibrator tag, `log(L_bol / erg s^-1)`,
+         `lambda_Edd`, `FWHM_broad (km/s)`, `v_outflow ([O III])`, `R_FeII`,
+         `SFR (M_sun/yr)`, complex reduced `chi_nu^2`, and human-readable
+         `confidence_flag` status badges.
+================================================================================

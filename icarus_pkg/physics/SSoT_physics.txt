@@ -1,0 +1,130 @@
+================================================================================
+ICARUS v3.4 ARCHITECTURE SPECIFICATION: PHYSICS ENGINE (icarus_pkg/physics/)
+================================================================================
+Purpose:
+Encapsulates all spectroscopic physical modeling, FFT template convolution,
+relative-velocity parameterizations, quantum doublet tying, Bayesian Information
+Criterion (BIC) model selection, and AGN demographic scaling relations.
+
+--------------------------------------------------------------------------------
+FILES TO IMPLEMENT IN THIS DIRECTORY
+--------------------------------------------------------------------------------
+
+1. continuum.py (New + evolved from v3.3 models.py & main.py)
+   - Role: Stage 1 Global Pseudo-Continuum Cascade & Stage 2 Local Pinning.
+   - Key Specifications:
+     * Pass 1 (Global Power-Law + Host Starlight + Balmer Continuum):
+       - Fits designated Fe-free rest-frame continuum windows (`continuum_windows`)
+         using Eq. (1) of the roadmap:
+         f_cont(lambda) = A_cont * (lambda / 5100 A)**alpha_lambda + f_host(lambda)
+       - Includes an optional optically thick Balmer continuum model below the
+         3646 A Balmer edge so the "Small Blue Bump" does not bias UV Fe II.
+       - Falls back cleanly to a bounded polynomial (degree 1-2) or local-only
+         continuum if fewer than 2 global anchor windows fall on the detector.
+     * Pass 2 (Fe II Pseudo-Continuum Co-Fit):
+       - Tightly bounds `A_cont` and `alpha_lambda` (+/- 0.15) from Pass 1 and
+         fits the empirical UV/Optical Fe II template normalization (`A_Fe`) and
+         velocity dispersion (`sigma_Fe`) across `feii_windows` (2200-2650 A and
+         4434-4684 A).
+     * Stage 2 Local Boundary-Condition Pinning (`build_local_continuum`):
+       - On each sliced complex (after subtracting the global power-law + Fe II
+         pseudo-continuum), masks out emission line cores (+/- 25 A) and computes
+         sigma-clipped median residuals in the leftmost 25% and rightmost 25% of
+         the window.
+       - Anchors a tightly bounded local linear adjustment through those boundary
+         edges so Gaussian wings strictly meet the local data at both ends of
+         the complex window.
+
+2. feii_model.py (New for v3.4)
+   - Role: Empirical UV and Optical Fe II template FFT convolution engine.
+   - Key Specifications:
+     * Loads pre-formatted empirical templates from `icarus_pkg/data/templates/`:
+       - UV: Vestergaard & Wilkes (2001) (1250-3090 A) bridged with Tsuzuki et al.
+         (2006) (3090-3500 A).
+       - Optical: Boroson & Green (1992) I Zw 1 template (3500-7500 A).
+     * Uniform Log-Wavelength Grid:
+       - Templates are stored on a uniform logarithmic wavelength grid with
+         constant velocity spacing dv = 10.0 km/s (d_ln_lambda = dv / c).
+     * Intrinsic Width Subtraction & FFT Convolution:
+       - Accounts for the intrinsic width of I Zw 1 (FWHM_temp = 900 km/s ->
+         sigma_temp = 382.19 km/s) by computing the convolution kernel width:
+         sigma_kern = sqrt(max(sigma_Fe**2 - 382.19**2, 10.0**2))
+       - Clamps parameter `sigma_Fe` to [400.0, 5000.0] km/s.
+       - Convolves template on the log-wavelength grid via
+         `scipy.signal.fftconvolve` and projects onto the target's rest-frame
+         wavelength vector via `np.interp`.
+     * Exposes an `lmfit.Model` wrapper (`FeIITemplateModel`) with parameters
+       `feii_uv_amp`, `feii_opt_amp`, `feii_v_offset` ([-500, +500] km/s), and
+       `feii_sigma_v` ([400, 5000] km/s).
+
+3. line_models.py (Extracted from v3.3 models.py)
+   - Role: Relative velocity-space Gaussian component factories.
+   - Key Specifications:
+     * Parameterizes all emission lines exclusively in relative velocity space:
+       `center = rest_wave * (1.0 + v_offset / C_KMS)`
+       `sigma  = rest_wave * (sigma_v / C_KMS)`
+     * Strict Roadmap v3.3/v3.4 Kinematic Bounds:
+       - Narrow Core (`emission_narrow`):
+         `v_offset` in [-350, +350] km/s; `sigma_v` in [30.0, 450.0] km/s.
+       - Broad BLR (`emission_broad`):
+         `v_offset` in [-600, +600] km/s (expanded to [-4000, +1000] km/s for
+         high-ionization UV wind lines `C_IV_1548`, `C_IV_1551`, `He_II_1640`);
+         `sigma_v` in [800.0, 8000.0] km/s.
+       - Asymmetric Outflow Wing (`emission_outflow` on `[O III]` 4959/5007):
+         `v_offset` in [-2000.0, -50.0] km/s; `sigma_v` in [250.0, 765.0] km/s
+         (strictly enforcing FWHM ~ 600 - 1800 km/s).
+
+4. fitting_engine.py (Evolved from v3.3 fitting_engine.py)
+   - Role: Complex grouping, slicing, quantum tying, and BIC optimization.
+   - Key Specifications:
+     * `SpectralPreparer`:
+       - Dynamically merges lines within `narrow_merge_radius = 25 A` or
+         `broad_merge_radius = 120 A`.
+       - Prunes individual lines whose core (+/- 12 A) has < 2 unmasked pixels.
+       - Tags `comp.in_bounds = True` only if >= 30 A of unmasked continuum
+         padding exists on both left and right sides and >= 65% of the window
+         is unmasked.
+     * `CoreFitter`:
+       - Couples narrow `v_offset` across all lines in a multi-line complex to
+         the primary anchor ion (`O_III_5007`, `N_II_6583`, `S_II_6716`,
+         `O_II_3729`) so narrow H-alpha/H-beta cores cannot drift into broad
+         wings (`BL/NL fault` prevention).
+       - Applies `doublet_tying` quantum flux ratios (`O_III` 1:3, `N_II` 1:2.95,
+         `C_IV` and `Mg_II` kinematics) across narrow, broad, and outflow models.
+       - Speed Gatekeeper: Skips the second `mod_b` (broad) optimization pass if
+         no narrow core in the complex clears 2.0x local RMS noise.
+       - Physical Broad Veto: Rejects `result_b` if broad FWHM > 70% of window
+         span, broad peak < 5% of narrow peak, or broad peak < 2.5x local RMS.
+       - Requires `Delta_BIC = BIC_broad - BIC_narrow <= -10.0` to accept broad
+         components.
+       - Computes 5-pixel boxcar residual noise scaling for 16th/50th/84th
+         percentile parameter uncertainties.
+
+5. demographics.py (Evolved from v3.3 science_metrics.py)
+   - Role: Single-epoch virial black hole masses, accretion state, BPT, and SFR.
+   - Key Specifications:
+     * Instrumental Deconvolution: Subtracts local instrumental resolution in
+       quadrature (`sigma_int = sqrt(max(sigma_obs**2 - sigma_inst**2, 0))`)
+       before computing intrinsic FWHMs.
+     * Monochromatic Continuum Luminosities: Evaluates pure AGN power-law at
+       1350 A, 3000 A, and 5100 A to compute `L_1350`, `L_3000`, and `L_5100`.
+     * Single-Epoch Virial Mass Waterfall (`H_beta -> H_alpha -> Mg_II -> C_IV -> Pa_beta`):
+       - H_beta + L_5100: Vestergaard & Peterson (2006) (zero-point 6.91).
+       - H_alpha + L_Ha_broad: Greene & Ho (2005) (zero-point 6.30).
+       - Mg_II + L_3000: Vestergaard & Osmer (2009) (zero-point 6.86).
+       - C_IV + L_1350: Coatman et al. (2017) (zero-point 6.66) with non-virial
+         blueshift correction `FWHM_corr = FWHM_meas / (0.36*(dv_blue/1000) + 0.61)`
+         anchored to narrow forbidden systemic velocity.
+       - Pa_beta: Case B recombination scaling when optical Balmer lines shift
+         out of band.
+     * Accretion Telemetry:
+       - Bolometric luminosity `L_bol` via Richards et al. (2006) bolometric
+         corrections (9.26 * L_5100, 5.15 * L_3000, 3.81 * L_1350, or 130 * L_Ha).
+       - Eddington ratio `lambda_Edd = L_bol / (1.26e38 * M_BH)`.
+       - Optical Fe II strength `R_FeII = EW(FeII_4434_4684) / EW(H_beta_broad)`.
+     * BPT & Narrow-Line SFR:
+       - Computes `log_N2_Ha` and `log_O3_Hb` along with limit flags (`none`,
+         `left`, `right`, `up`, `down`) for BPT arrow plotting.
+       - Computes narrow-line SFR from H_alpha or Pa_beta, flagging as an upper
+         limit if broad AGN emission is present.
+================================================================================

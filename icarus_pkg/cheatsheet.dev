@@ -1,0 +1,24 @@
+# 1. Track hardware-agnostic optimizer metrics (nfev, nvarys, covar_cond, BIC)
+TRACK_OPTIMIZER: @ GLOBAL
+
+# 2. Profile wall-clock time and peak RAM across all hooks
+PROFILE: @ GLOBAL
+TRACE_MEMORY: @ agn_fitter_fit
+
+# 3. Stress-test instrument calibration (velocity shift, LSF error, continuum ripple)
+ABERRATE_INSTRUMENT: v_shift_kms=35.0 lsf_scale=1.15 ripple_amp=0.10 ripple_period_aa=300.0 @ build_spectrum
+
+# 4. Stress-test cosmic rays or NIRSpec detector chip gaps
+INJECT_ARTIFACT: mode='cosmic_ray' snr=100.0 count=3 @ build_spectrum
+INJECT_ARTIFACT: mode='chip_gap' wave=4862.68 width_aa=25.0 @ build_spectrum
+
+# 5. Inject synthetic broad/narrow features and run Monte Carlo SNR degradation
+SYNTH_INJECT: wave=[6564.61] flux=[15.0] sigma=[45.0] @ agn_fitter_fit
+PERTURB: iterations=10 mode='gaussian' noise_scale=2.0 @ agn_fitter_fit
+
+# 6. Force Stage 1 global continuum failure to benchmark Stage 2 local fallback
+FORCE_FAIL: @ fit_global_sed
+
+# 7. Watch local variables and dump all collected telemetry to JSON on exit
+WATCH: delta_bic
+DUMP_TELEMETRY: OUT='ku_hpc_telemetry.json' @ GLOBAL

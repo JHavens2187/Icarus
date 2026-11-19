@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "icarus_pkg"
+version = "3.4.0"
+description = "ICARUS: An AGN-Specialized Emission Line & Kinematic Fitting Engine"
+authors = [{ name = "Joseph Havens", email = "joe.havens79@ku.edu" }]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26.0",
+    "scipy>=1.11.0",
+    "astropy>=6.0.0",
+    "lmfit>=1.2.2",
+    "pydantic>=2.5.0",
+    "pyyaml>=6.0.1",
+    "pandas>=2.1.0",
+    "matplotlib>=3.8.0",
+    "click>=8.1.7",
+    "colorama>=0.4.6",
+    "numba>=0.59.0",
+    "ipython>=8.18.0",
+]
+
+[project.scripts]
+icarus = "icarus_pkg.cli:pipeline"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["icarus_pkg*"]
+
+[tool.setuptools.package-data]
+icarus_pkg = [
+    "presets/*.yaml",
+    "data/*.fits",
+    "data/templates/*.fits",
+    "data/dispersion/*.fits",
+]

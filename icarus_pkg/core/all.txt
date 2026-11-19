@@ -1,0 +1,2438 @@
+"""
+icarus_pkg.core
+
+Core infrastructure, immutable data containers, Pydantic configuration schemas,
+unit-safe FITS ingestion, Multi-Extension FITS I/O, and runtime debugging hooks.
+"""
+
+__project__ = "ICARUS"
+__author__ = "Joseph Havens"
+__version__ = "3.4.0"
+
+from .config import FittingConfig, GlobalConfig, IcarusConfig, SetupConfig
+from .containers import (
+    EmissionLineDef,
+    LineComplex,
+    SpectralComponent,
+    Spectrum1D,
+    Target,
+)
+from .dev_tools import DevState, dev_hook
+from .exceptions import (
+    IcarusConfigurationError,
+    IcarusConvergenceError,
+    IcarusDataDimensionError,
+    IcarusError,
+    IcarusIngestionError,
+    IcarusKinematicError,
+    IcarusTemplateError,
+)
+from .ingest import CatalogRegistry, ObservationBuilder
+from .io import ResultWriter
+from .logger import get_icarus_logger
+
+__all__ = [
+    "FittingConfig",
+    "GlobalConfig",
+    "IcarusConfig",
+    "SetupConfig",
+    "EmissionLineDef",
+    "LineComplex",
+    "SpectralComponent",
+    "Spectrum1D",
+    "Target",
+    "DevState",
+    "dev_hook",
+    "IcarusError",
+    "IcarusDataDimensionError",
+    "IcarusIngestionError",
+    "IcarusConfigurationError",
+    "IcarusKinematicError",
+    "IcarusTemplateError",
+    "IcarusConvergenceError",
+    "CatalogRegistry",
+    "ObservationBuilder",
+    "ResultWriter",
+    "get_icarus_logger",
+]
+"""
+config.py
+
+Configuration schemas for the ICARUS v3.4 pipeline.
+Handles YAML preset resolution, type enforcement, flexible cosmology models,
+custom FITS column mappings, and dynamic compilation of overrides via Pydantic.
+"""
+
+__project__ = "ICARUS"
+__author__ = "Joseph Havens"
+__version__ = "3.4.0"
+
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional, Union
+
+import astropy.cosmology as astro_cosmo
+import yaml
+from astropy import units as u
+from astropy.cosmology import Cosmology, FlatLambdaCDM
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from .containers import Target
+from .exceptions import IcarusConfigurationError
+
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+
+
+def parse_astropy_quantity(value: Union[str, float, u.Quantity]) -> u.Quantity:
+    """Helper to parse configuration strings into Astropy units."""
+    if isinstance(value, u.Quantity):
+        return value
+    if isinstance(value, (int, float)):
+        return u.Quantity(value)
+    if isinstance(value, str):
+        try:
+            return u.Quantity(value)
+        except Exception as e:
+            raise IcarusConfigurationError(
+                f"Cannot parse '{value}' into an astropy.units.Quantity: {e}"
+            )
+    raise IcarusConfigurationError(f"Invalid type for quantity parsing: {type(value)}")
+
+
+class FittingConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    cont_type: Literal["powerlaw_feii", "polynomial", "powerlaw"] = "powerlaw_feii"
+    continuum_degree: int = Field(
+        default=2, ge=0, le=3, description="Order of polynomial continuum fallback"
+    )
+
+    continuum_windows: List[List[float]] = Field(
+        default_factory=lambda: [
+            [1330.0, 1370.0],
+            [1445.0, 1485.0],
+            [1700.0, 1800.0],
+            [2100.0, 2200.0],
+            [3010.0, 3070.0],
+            [4180.0, 4230.0],
+            [4430.0, 4770.0],
+            [5080.0, 5450.0],
+            [7400.0, 7700.0],
+            [8400.0, 8800.0],
+            [10100.0, 10500.0],
+            [11800.0, 12200.0],
+            [15000.0, 15500.0],
+            [20000.0, 21000.0],
+        ],
+        description="Rest-frame windows (Angstroms) for anchoring the global continuum.",
+    )
+
+    feii_windows: List[List[float]] = Field(
+        default_factory=lambda: [
+            [2200.0, 2650.0],
+            [4434.0, 4684.0],
+            [5150.0, 5400.0],
+        ],
+        description="Rest-frame UV and Optical Fe II pseudo-continuum fitting windows.",
+    )
+
+    enable_feii: bool = Field(
+        default=True,
+        description="Enable empirical UV/Optical Fe II template FFT deconvolution.",
+    )
+
+    couple_narrow_v_offset: bool = Field(
+        default=True,
+        description="Couple secondary narrow line v_offset parameters to the primary anchor ion in multi-line complexes.",
+    )
+
+    enable_speed_gatekeeper: bool = Field(
+        default=True,
+        description="Skip broad-line optimization pass if no narrow core clears 2.0x local RMS noise.",
+    )
+
+    priority_lines: List[str] = Field(
+        default_factory=lambda: [
+            "O_III_5007",
+            "H_beta",
+            "H_alpha",
+            "N_II_6583",
+            "Pa_beta",
+            "Pa_alpha",
+            "He_I_10830",
+            "S_III_9531",
+            "Mg_II_2796",
+            "C_IV_1548",
+            "C_III_1909",
+            "O_II_3729",
+            "Ly_alpha",
+        ],
+        description="Programmatic priority ranking for selecting featured diagnostic subpanels.",
+    )
+
+    cont_width: Optional[u.Quantity] = u.Quantity("500.0 Angstrom")
+    center: Literal["free", "constrained", "fixed"] = "constrained"
+    snr_threshold: float = Field(default=3.0, description="Minimum S/N for detection")
+
+    min_sigma: Optional[u.Quantity] = u.Quantity("30.0 km / s")
+    max_sigma: Optional[u.Quantity] = u.Quantity("450.0 km / s")
+
+    doublet_tying: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "O_III_doublet": {
+                "lines": ["O_III_4959", "O_III_5007"],
+                "flux_ratio": 0.3333333333,
+                "tie_kinematics": True,
+            },
+            "N_II_doublet": {
+                "lines": ["N_II_6548", "N_II_6583"],
+                "flux_ratio": 0.339,
+                "tie_kinematics": True,
+            },
+            "S_III_doublet": {
+                "lines": ["S_III_9069", "S_III_9531"],
+                "flux_ratio": 0.4048,
+                "tie_kinematics": True,
+            },
+            "O_II_doublet": {
+                "lines": ["O_II_3726", "O_II_3729"],
+                "tie_kinematics": True,
+            },
+            "S_II_doublet": {
+                "lines": ["S_II_6716", "S_II_6731"],
+                "tie_kinematics": True,
+            },
+            "C_IV_doublet": {
+                "lines": ["C_IV_1548", "C_IV_1551"],
+                "tie_kinematics": True,
+            },
+            "Mg_II_doublet": {
+                "lines": ["Mg_II_2796", "Mg_II_2803"],
+                "tie_kinematics": True,
+            },
+        }
+    )
+
+    broad_kinematics: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "min_sigma": "800.0 km / s",
+            "max_sigma": "8000.0 km / s",
+        }
+    )
+
+    @field_validator("cont_width", "min_sigma", "max_sigma", mode="before")
+    @classmethod
+    def validate_quantities(cls, v):
+        return parse_astropy_quantity(v) if v is not None else v
+
+
+class GlobalConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    line_table: str = str(PACKAGE_ROOT / "data" / "icarus_master_lines.fits")
+    lines: Union[List[str], Literal["all"]] = "all"
+
+    wave_unit: str = "um"
+    flux_unit: str = "1e-20 erg / (cm2 s AA)"
+    resolution: Optional[u.Quantity] = u.Quantity("300.0 km / s")
+    dispersion_curve: Optional[str] = None
+
+    # Dynamic FITS schema mapping (supports wave/loglam, flux, err/ivar/var, mask)
+    column_mapping: Dict[str, str] = Field(
+        default_factory=lambda: {
+            "wave": "WAVE",
+            "flux": "FLUX",
+            "err": "ERR",
+        },
+        description="Custom mapping of standard keys ('wave', 'flux', 'err', 'ivar', 'var', 'loglam', 'mask') to FITS column names.",
+    )
+
+    sky: Optional[str] = None
+    mask_sky: bool = False
+    fitting: FittingConfig = Field(default_factory=FittingConfig)
+
+    H0: float = 70.0
+    Om0: float = 0.3
+    cosmology_model: Optional[Union[str, Cosmology]] = Field(
+        default=None,
+        description="Optional named Astropy cosmology (e.g., 'Planck18', 'WMAP9') or Cosmology instance.",
+    )
+
+    @field_validator("resolution", mode="before")
+    @classmethod
+    def validate_res(cls, v):
+        return parse_astropy_quantity(v) if v is not None else v
+
+    @property
+    def cosmology(self) -> Cosmology:
+        if isinstance(self.cosmology_model, Cosmology):
+            return self.cosmology_model
+        if isinstance(self.cosmology_model, str) and self.cosmology_model.strip():
+            name = self.cosmology_model.strip()
+            if hasattr(astro_cosmo, name):
+                return getattr(astro_cosmo, name)
+            raise IcarusConfigurationError(
+                f"Unknown Astropy cosmology model '{name}'. Valid options include 'Planck18', 'Planck15', 'WMAP9'."
+            )
+        return FlatLambdaCDM(H0=self.H0, Om0=self.Om0)
+
+
+class SetupConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    resolution: Optional[u.Quantity] = None
+    dispersion_curve: Optional[str] = None
+    column_mapping: Optional[Dict[str, str]] = None
+    fitting: Optional[FittingConfig] = None
+
+    @field_validator("resolution", mode="before")
+    @classmethod
+    def validate_quantity(cls, v):
+        return parse_astropy_quantity(v) if v is not None else v
+
+
+class IcarusConfig(BaseModel):
+    globals: GlobalConfig = Field(default_factory=GlobalConfig)
+    setups: Dict[str, SetupConfig] = Field(default_factory=dict)
+    sources: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+
+    @classmethod
+    def from_preset(
+        cls,
+        preset: Union[str, Path, Dict[str, Any], None] = "jwst_nirspec_medium",
+        **overrides: Any,
+    ) -> "IcarusConfig":
+        """
+        Loads an IcarusConfig from a built-in preset name (e.g., 'jwst_nirspec_medium'),
+        an explicit YAML file path, or a raw dictionary, and applies any keyword
+        overrides directly to `globals` or `globals.fitting`.
+        """
+        if preset is None:
+            raw_yaml: Dict[str, Any] = {}
+        elif isinstance(preset, dict):
+            raw_yaml = dict(preset)
+        else:
+            path_candidate = Path(preset)
+            if not path_candidate.exists():
+                preset_name = str(preset).removesuffix(".yaml").removesuffix(".yml")
+                pkg_preset = PACKAGE_ROOT / "presets" / f"{preset_name}.yaml"
+                if pkg_preset.exists():
+                    path_candidate = pkg_preset
+                else:
+                    raise IcarusConfigurationError(
+                        f"Could not locate preset or configuration file: '{preset}'"
+                    )
+
+            with open(path_candidate, "r") as f:
+                raw_yaml = yaml.safe_load(f) or {}
+
+        if "globals" not in raw_yaml:
+            raw_yaml["globals"] = {}
+
+        if "line_table" in raw_yaml["globals"]:
+            lt_path = Path(raw_yaml["globals"]["line_table"])
+            if not lt_path.exists():
+                pkg_lt = PACKAGE_ROOT / "data" / lt_path.name
+                if pkg_lt.exists():
+                    raw_yaml["globals"]["line_table"] = str(pkg_lt)
+
+        cfg = cls(**raw_yaml)
+        if overrides:
+            cfg = cfg.apply_overrides(**overrides)
+        return cfg
+
+    def apply_overrides(self, **overrides: Any) -> "IcarusConfig":
+        """
+        Applies runtime keyword overrides (e.g., `cosmology=Planck18`,
+        `column_mapping={...}`, `snr_threshold=2.5`, `enable_feii=False`,
+        `couple_narrow_v_offset=False`, `enable_speed_gatekeeper=False`)
+        directly to a deep copy of this configuration.
+        """
+        updated = self.model_copy(deep=True)
+        global_fields = set(GlobalConfig.model_fields.keys())
+        fitting_fields = set(FittingConfig.model_fields.keys())
+
+        for key, val in overrides.items():
+            if val is None:
+                continue
+            if key == "cosmology":
+                updated.globals.cosmology_model = val
+            elif key == "column_mapping" and isinstance(val, dict):
+                updated.globals.column_mapping = {
+                    **updated.globals.column_mapping,
+                    **val,
+                }
+            elif key in global_fields:
+                if key == "resolution":
+                    val = parse_astropy_quantity(val)
+                setattr(updated.globals, key, val)
+            elif key in fitting_fields:
+                if key in ("cont_width", "min_sigma", "max_sigma"):
+                    val = parse_astropy_quantity(val)
+                setattr(updated.globals.fitting, key, val)
+
+        return updated
+
+    def get_target_config(self, target: Target) -> GlobalConfig:
+        """Layers Globals -> Setup -> Source to yield a unified configuration."""
+        final_config = self.globals.model_copy(deep=True)
+
+        if target.setup and target.setup in self.setups:
+            setup_conf = self.setups[target.setup]
+            if setup_conf.resolution is not None:
+                final_config.resolution = setup_conf.resolution
+            if setup_conf.dispersion_curve is not None:
+                final_config.dispersion_curve = setup_conf.dispersion_curve
+            if setup_conf.column_mapping is not None:
+                final_config.column_mapping = {
+                    **final_config.column_mapping,
+                    **setup_conf.column_mapping,
+                }
+            if setup_conf.fitting:
+                merged_fitting = {
+                    **final_config.fitting.model_dump(exclude_none=True),
+                    **setup_conf.fitting.model_dump(exclude_none=True),
+                }
+                final_config.fitting = FittingConfig(**merged_fitting)
+
+        if target.target_id in self.sources:
+            source_overrides = self.sources[target.target_id]
+
+            if "lines" in source_overrides:
+                final_config.lines = source_overrides["lines"]
+
+            if "column_mapping" in source_overrides:
+                final_config.column_mapping = {
+                    **final_config.column_mapping,
+                    **source_overrides["column_mapping"],
+                }
+
+            if "fitting" in source_overrides:
+                merged_fitting = {
+                    **final_config.fitting.model_dump(exclude_none=True),
+                    **source_overrides["fitting"],
+                }
+                final_config.fitting = FittingConfig(**merged_fitting)
+
+        return final_config
+"""
+containers.py
+
+Immutable data structures and spectral containers for the ICARUS v3.4 pipeline.
+Provides catalog-free single-file ingestion via `Spectrum1D.read()` and in-memory
+array initialization via `Spectrum1D.from_arrays()`.
+"""
+
+__project__ = "ICARUS"
+__author__ = "Joseph Havens"
+__version__ = "3.4.0"
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import numpy as np
+from astropy import units as u
+from lmfit import Parameters
+
+from .dev_tools import DevState, dev_hook
+from .exceptions import IcarusDataDimensionError
+from .logger import get_icarus_logger
+
+log = get_icarus_logger()
+STANDARD_FLUX_UNIT = u.Unit("erg / (cm2 s AA)")
+
+
+@dataclass(frozen=True, kw_only=True)
+class Target:
+    """Immutable metadata for a single astrophysical source."""
+
+    target_id: str
+    redshift: float = 0.0
+    sample: Optional[str] = None
+    setup: Optional[str] = None
+    pointing: Optional[str] = None
+    ra: Optional[float] = None
+    dec: Optional[float] = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class Spectrum1D:
+    """
+    Immutable container for 1D spectral arrays.
+    Tracks structural dimensions, target context, wavelength-dependent instrumental
+    dispersion (sigma_inst in km/s), and O(1) dynamic scaling parameters.
+    """
+
+    wavelength: u.Quantity
+    flux: u.Quantity
+    uncertainty: u.Quantity
+    mask: np.ndarray
+    target: Target
+    spectral_unit: u.Unit = u.AA
+    flux_unit: u.Unit = STANDARD_FLUX_UNIT
+    flux_scale_factor: float = 1.0
+    resolution_kms: Optional[np.ndarray] = None
+    meta: Dict[str, Any] = field(default_factory=dict)
+    history: List[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        shapes = {
+            "wavelength": self.wavelength.shape,
+            "flux": self.flux.shape,
+            "uncertainty": self.uncertainty.shape,
+            "mask": self.mask.shape,
+        }
+        if self.resolution_kms is not None:
+            shapes["resolution_kms"] = np.asarray(self.resolution_kms).shape
+
+        if len(set(shapes.values())) > 1:
+            raise IcarusDataDimensionError(
+                f"Array shape mismatch in Spectrum1D initialization for {self.target.target_id}: {shapes}"
+            )
+
+        if not (len(self.wavelength) == len(self.flux) == len(self.uncertainty)):
+            raise IcarusDataDimensionError(
+                "Spectral arrays must have identical lengths."
+            )
+
+        if not self.wavelength.unit.is_equivalent(u.AA):
+            log.warning(
+                f"[{self.target.target_id}] Internal spectral axis must be equivalent to Angstroms."
+            )
+
+    @dev_hook(step_name="spectrum_to_ndarrays")
+    def to_ndarrays(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Returns (wavelength, flux, uncertainty) float64 arrays in O(1) scaled space."""
+        DevState.emit("pre_to_ndarrays", {"target_id": self.target.target_id})
+        arrays = (
+            np.asarray(self.wavelength.value, dtype=np.float64),
+            np.asarray(self.flux.value, dtype=np.float64),
+            np.asarray(self.uncertainty.value, dtype=np.float64),
+        )
+        DevState.emit("post_to_ndarrays", {"target_id": self.target.target_id})
+        return arrays
+
+    def get_inst_sigma_kms(self, rest_wavelength: float) -> float:
+        """Returns the instrumental velocity dispersion sigma_inst [km/s] at `rest_wavelength`."""
+        if self.resolution_kms is None or len(self.resolution_kms) == 0:
+            return 127.4  # Default FWHM = 300 km/s
+        w_vals = np.asarray(self.wavelength.value, dtype=np.float64)
+        idx = int(np.argmin(np.abs(w_vals - rest_wavelength)))
+        return float(self.resolution_kms[idx])
+
+    @classmethod
+    def from_arrays(
+        cls,
+        wavelength: Union[np.ndarray, u.Quantity],
+        flux: Union[np.ndarray, u.Quantity],
+        uncertainty: Union[np.ndarray, u.Quantity],
+        redshift: float = 0.0,
+        target_id: str = "synthetic_target",
+        wave_unit: Union[str, u.Unit] = u.AA,
+        flux_unit: Union[str, u.Unit] = STANDARD_FLUX_UNIT,
+        resolution_fwhm_kms: float = 300.0,
+        mask: Optional[np.ndarray] = None,
+        is_rest_frame: bool = False,
+    ) -> "Spectrum1D":
+        """
+        Constructs a normalized, rest-frame Spectrum1D directly from in-memory arrays.
+        Ideal for interactive notebook experimentation and synthetic CLOUDY tests.
+        """
+        w_unit = u.Unit(wave_unit)
+        f_unit = u.Unit(flux_unit)
+
+        w_qty_obs = (
+            wavelength.to(u.AA, equivalencies=u.spectral())
+            if isinstance(wavelength, u.Quantity)
+            else (np.asarray(wavelength, dtype=np.float64) * w_unit).to(
+                u.AA, equivalencies=u.spectral()
+            )
+        )
+        f_qty_obs = (
+            flux.to(STANDARD_FLUX_UNIT, equivalencies=u.spectral_density(w_qty_obs))
+            if isinstance(flux, u.Quantity)
+            else (np.asarray(flux, dtype=np.float64) * f_unit).to(
+                STANDARD_FLUX_UNIT, equivalencies=u.spectral_density(w_qty_obs)
+            )
+        )
+        e_qty_obs = (
+            uncertainty.to(
+                STANDARD_FLUX_UNIT, equivalencies=u.spectral_density(w_qty_obs)
+            )
+            if isinstance(uncertainty, u.Quantity)
+            else (np.asarray(uncertainty, dtype=np.float64) * f_unit).to(
+                STANDARD_FLUX_UNIT, equivalencies=u.spectral_density(w_qty_obs)
+            )
+        )
+
+        if redshift > 0.0 and not is_rest_frame:
+            w_qty = w_qty_obs / (1.0 + redshift)
+            f_qty = f_qty_obs * (1.0 + redshift)
+            e_qty = e_qty_obs * (1.0 + redshift)
+        else:
+            w_qty, f_qty, e_qty = w_qty_obs, f_qty_obs, e_qty_obs
+
+        finite_f = np.abs(f_qty.value[np.isfinite(f_qty.value) & (f_qty.value != 0)])
+        if len(finite_f) > 0:
+            scale_factor = float(10.0 ** np.floor(np.log10(np.nanmedian(finite_f))))
+            if not np.isfinite(scale_factor) or scale_factor == 0:
+                scale_factor = 1.0
+        else:
+            scale_factor = 1.0
+
+        norm_f = f_qty / scale_factor
+        norm_e = e_qty / scale_factor
+
+        auto_mask = (
+            ~np.isfinite(norm_f.value)
+            | ~np.isfinite(norm_e.value)
+            | (norm_e.value <= 0)
+        )
+        if mask is not None:
+            auto_mask = auto_mask | np.asarray(mask, dtype=bool)
+
+        sigma_inst = float(resolution_fwhm_kms) / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+        res_arr = np.full(len(w_qty), sigma_inst, dtype=np.float64)
+
+        return cls(
+            wavelength=w_qty,
+            flux=norm_f,
+            uncertainty=norm_e,
+            mask=auto_mask,
+            target=Target(target_id=str(target_id), redshift=float(redshift)),
+            spectral_unit=u.AA,
+            flux_unit=STANDARD_FLUX_UNIT,
+            flux_scale_factor=scale_factor,
+            resolution_kms=res_arr,
+            history=["Initialized in-memory via Spectrum1D.from_arrays()"],
+        )
+
+    @classmethod
+    def read(
+        cls,
+        filepath: Union[str, Path],
+        redshift: float = 0.0,
+        target_id: Optional[str] = None,
+        preset: Optional[Union[str, Path, Any]] = "jwst_nirspec_medium",
+        setup: Optional[str] = None,
+        column_mapping: Optional[Dict[str, str]] = None,
+        **overrides: Any,
+    ) -> "Spectrum1D":
+        """
+        Catalog-free single-file loader for interactive notebooks and tutorials:
+        `spec = ic.Spectrum1D.read("jades_4096.fits", redshift=2.46)`
+        """
+        from .config import IcarusConfig
+        from .ingest import ObservationBuilder
+
+        fpath = Path(filepath)
+        tid = target_id or fpath.stem
+        target = Target(target_id=str(tid), redshift=float(redshift), setup=setup)
+
+        if isinstance(preset, IcarusConfig):
+            ic_cfg = preset.apply_overrides(column_mapping=column_mapping, **overrides)
+            local_cfg = ic_cfg.get_target_config(target)
+        elif preset is not None:
+            ic_cfg = IcarusConfig.from_preset(
+                preset, column_mapping=column_mapping, **overrides
+            )
+            local_cfg = ic_cfg.get_target_config(target)
+        else:
+            local_cfg = None
+
+        builder = ObservationBuilder(fpath.parent, column_mapping=column_mapping)
+        spec = builder.build_spectrum(
+            target,
+            fpath,
+            config=local_cfg,
+            dry_run=False,
+            column_mapping=column_mapping,
+        )
+        if spec is None:
+            raise IcarusDataDimensionError(f"Failed to read Spectrum1D from {fpath}")
+        return spec
+
+
+@dataclass
+class EmissionLineDef:
+    name: str
+    rest_wavelength: float
+    test_broad: bool = False
+    outflow_candidate: bool = False
+
+
+@dataclass
+class LineComplex:
+    lines: List[EmissionLineDef]
+    window_start: u.Quantity
+    window_end: u.Quantity
+    in_bounds: bool = True
+
+    @property
+    def name(self) -> str:
+        return "_".join([line.name for line in self.lines])
+
+    @property
+    def primary_line(self) -> EmissionLineDef:
+        """Selects the primary anchor transition for velocity-space centering."""
+        priority_anchors = (
+            "O_III_5007",
+            "H_alpha",
+            "H_beta",
+            "Pa_beta",
+            "Pa_alpha",
+            "He_I_10830",
+            "S_III_9531",
+            "Mg_II_2796",
+            "C_IV_1548",
+            "C_III_1909",
+            "O_II_3729",
+            "Ly_alpha",
+        )
+        for anchor in priority_anchors:
+            for line in self.lines:
+                if line.name == anchor:
+                    return line
+        return self.lines[0]
+
+
+@dataclass
+class SpectralComponent:
+    name: str
+    model: Any
+    params: Parameters
+    component_type: str
+    rest_wavelength: Optional[float] = None
+"""
+dev_tools.py
+
+Middleware debugging, stress-testing, and benchmarking engine for ICARUS v3.4.
+Facilitates non-destructive pipeline instrumentation via the @dev_hook
+decorator and the DevState event emitter.
+
+Supported Directives:
+  - TRACK_OPTIMIZER     : Records hardware-agnostic LMFIT metrics (nfev, nvarys, ndata, redchi, bic, covar_cond).
+  - ABERRATE_INSTRUMENT : Applies wavelength/velocity shifts, LSF scaling, or continuum ripples to Spectrum1D.
+  - INJECT_ARTIFACT     : Injects cosmic-ray spikes or detector chip-gap NaN troughs into Spectrum1D.
+  - DUMP_TELEMETRY      : Serializes all collected runtime, memory, optimizer, and watch telemetry to JSON/CSV.
+  - SYNTH_INJECT        : Injects synthetic Gaussian emission lines at specified rest wavelengths.
+  - PERTURB             : Executes Monte Carlo Gaussian/Poisson noise realizations over a pipeline step.
+  - FORCE_FAIL          : Raises IcarusConvergenceError at a designated step to test fallback pathways.
+  - WATCH               : Tracks state mutations of designated local variables across inline emit events.
+  - TRACE_MEMORY        : Profiles heap memory high-water marks (MB) per step via tracemalloc.
+  - PROFILE             : Profiles wall-clock execution time (ms) per step.
+"""
+
+__project__ = "ICARUS"
+__author__ = "Joseph Havens"
+__version__ = "3.4.0"
+
+import ast
+import atexit
+import functools
+import json
+import os
+import pprint
+import sys
+import time
+import tracemalloc
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+
+import numpy as np
+
+# Attempt to load IPython for interactive pauses, fallback to native pdb
+try:
+    from IPython import embed
+
+    HAS_IPYTHON = True
+except ImportError:
+    import pdb
+
+    HAS_IPYTHON = False
+
+from .exceptions import IcarusConvergenceError
+from .logger import get_icarus_logger
+
+log = get_icarus_logger("DEV_ENGINE")
+C_KMS = 299792.458
+
+
+def _find_spectrum(args: tuple, kwargs: dict, result: Any = None) -> Optional[Any]:
+    """
+    Locates a `Spectrum1D` instance across positional args, keyword args,
+    `AGNFitter.spectrum` (`self.spectrum`), or hook return values.
+    """
+    for item in (
+        list(args) + list(kwargs.values()) + ([result] if result is not None else [])
+    ):
+        if item is None:
+            continue
+        if (
+            hasattr(item, "flux")
+            and hasattr(item, "wavelength")
+            and hasattr(item, "uncertainty")
+        ):
+            return item
+        if hasattr(item, "spectrum"):
+            sub = getattr(item, "spectrum")
+            if hasattr(sub, "flux") and hasattr(sub, "wavelength"):
+                return sub
+    return None
+
+
+def _extract_optimizer_metrics(
+    fit_res: Any, label: str = ""
+) -> Optional[Dict[str, Any]]:
+    """Extracts hardware-agnostic optimization metrics from an lmfit ModelResult."""
+    if (
+        fit_res is None
+        or not hasattr(fit_res, "nfev")
+        or not hasattr(fit_res, "params")
+    ):
+        return None
+
+    covar_cond = float("nan")
+    covar = getattr(fit_res, "covar", None)
+    if covar is not None:
+        try:
+            cov_arr = np.asarray(covar, dtype=np.float64)
+            if cov_arr.ndim == 2 and cov_arr.size > 0 and np.all(np.isfinite(cov_arr)):
+                covar_cond = float(np.linalg.cond(cov_arr))
+        except Exception:
+            pass
+
+    return {
+        "label": label,
+        "success": bool(getattr(fit_res, "success", False)),
+        "nfev": int(getattr(fit_res, "nfev", 0)),
+        "nvarys": int(getattr(fit_res, "nvarys", 0)),
+        "ndata": int(getattr(fit_res, "ndata", 0)),
+        "chisqr": float(getattr(fit_res, "chisqr", np.nan)),
+        "redchi": float(getattr(fit_res, "redchi", np.nan)),
+        "aic": float(getattr(fit_res, "aic", np.nan)),
+        "bic": float(getattr(fit_res, "bic", np.nan)),
+        "covar_cond": covar_cond,
+    }
+
+
+class _DevState:
+    """Singleton managing global developer state, active directives, and telemetry."""
+
+    def __init__(self):
+        self.dev_file: Optional[Path] = None
+        self.is_active: bool = False
+        self.step_mode: bool = False
+        self.dag_registry: Dict[str, str] = {}
+
+        self.directives: Dict[str, Dict[str, Dict[str, Any]]] = {
+            "DEBUG": {},
+            "PAUSE": {},
+            "BYPASS": {},
+            "ISOLATE": {},
+            "INJECT": {},
+            "SYNTH_ISOLATE": {},
+            "SYNTH_INJECT": {},
+            "WATCH": {},
+            "VISUALIZE": {},
+            "PERTURB": {},
+            "FORCE_FAIL": {},
+            "DUMP_DAG": {},
+            "PROFILE": {},
+            "TRACE_MEMORY": {},
+            "TRACK_OPTIMIZER": {},
+            "ABERRATE_INSTRUMENT": {},
+            "INJECT_ARTIFACT": {},
+            "DUMP_TELEMETRY": {},
+        }
+
+        self.telemetry: Dict[str, Any] = {
+            "time": {},
+            "memory": {},
+            "optimizer": [],
+            "watch": [],
+            "perturb": {},
+        }
+        self._shadow_watch: Dict[str, Any] = {}
+        atexit.register(self.flush_telemetry)
+
+    def initialize(self, path: Path) -> None:
+        """Explicit activation trigger called by cli.py or interactive sessions."""
+        self.dev_file = Path(path)
+        if self.dev_file.exists() and self.dev_file.stat().st_size > 0:
+            self._parse_dev_file()
+            self.is_active = True
+
+    def _parse_dev_file(self) -> None:
+        """Ingests the .dev file and populates the directives routing table."""
+        if not self.dev_file:
+            return
+
+        with open(self.dev_file, "r") as f:
+            lines = f.readlines()
+
+        parsed_command_count = 0
+
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            if ":" not in line:
+                log.warning(
+                    f"DEV_TOOL: Skipping malformed line (missing colon): {line}"
+                )
+                continue
+
+            try:
+                cmd_part, rest = line.split(":", 1)
+                cmd = cmd_part.strip().upper()
+
+                if cmd not in self.directives:
+                    continue
+
+                args_dict: Dict[str, Any] = {}
+                step_name = "GLOBAL"
+
+                if "@" in rest:
+                    args_part, step_name = rest.split("@", 1)
+                    step_name = step_name.strip()
+                else:
+                    args_part = rest
+
+                for arg in args_part.split():
+                    if "=" in arg:
+                        k, v = arg.split("=", 1)
+                        try:
+                            args_dict[k] = ast.literal_eval(v)
+                        except (ValueError, SyntaxError):
+                            args_dict[k] = v
+                    else:
+                        step_name = arg.strip()
+
+                if step_name not in self.directives[cmd]:
+                    self.directives[cmd][step_name] = {}
+
+                self.directives[cmd][step_name].update(args_dict)
+                parsed_command_count += 1
+
+            except Exception as e:
+                log.error(f"Failed to parse .dev instruction: '{line}' | Error: {e}")
+
+        if parsed_command_count > 0:
+            self.is_active = True
+            log.warning(
+                f"DEVELOPMENT MODE ACTIVE ({parsed_command_count} directives). Multiprocessing bypass engaged."
+            )
+
+    def _is_enabled(self, directive: str, name: str) -> Optional[Dict[str, Any]]:
+        """Returns directive arguments if active for `name` or `GLOBAL`."""
+        d_map = self.directives.get(directive, {})
+        if name in d_map:
+            return d_map[name]
+        if "GLOBAL" in d_map:
+            return d_map["GLOBAL"]
+        return None
+
+    def run_preflight(self) -> None:
+        """Handles non-runtime directives like DUMP_DAG."""
+        if not self.is_active:
+            return
+
+        if "DUMP_DAG" in self.directives and self.directives["DUMP_DAG"]:
+            out_file = self.directives["DUMP_DAG"].get("GLOBAL", {}).get("OUT", None)
+
+            dag_str = "=" * 50 + "\n"
+            dag_str += "ICARUS v3.4 - DIRECTED ACYCLIC GRAPH (HOOKS)\n"
+            dag_str += "=" * 50 + "\n"
+            for step, mod in sorted(self.dag_registry.items()):
+                dag_str += f"[{mod}] -> {step}\n"
+
+            if out_file:
+                with open(out_file, "w") as f:
+                    f.write(dag_str)
+                print(f"DAG map successfully dumped to {out_file}")
+            else:
+                print(dag_str)
+
+            sys.exit(0)
+
+    def flush_telemetry(self) -> Optional[Path]:
+        """Writes collected telemetry to disk if DUMP_TELEMETRY is active."""
+        if not self.is_active or not self.directives.get("DUMP_TELEMETRY"):
+            return None
+
+        cfg = self._is_enabled("DUMP_TELEMETRY", "GLOBAL") or next(
+            iter(self.directives["DUMP_TELEMETRY"].values()), {}
+        )
+        out_str = cfg.get("OUT", cfg.get("out", "icarus_dev_telemetry.json"))
+        out_path = Path(str(out_str))
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with open(out_path, "w") as f:
+                json.dump(self.telemetry, f, indent=2, default=str)
+            log.info(f"[DUMP_TELEMETRY] Wrote telemetry payload to {out_path}")
+            return out_path
+        except Exception as e:
+            log.error(f"[DUMP_TELEMETRY] Failed to serialize telemetry: {e}")
+            return None
+
+    def trigger_pause(self, msg: str, local_vars: dict) -> None:
+        """Drops into an interactive shell with a 'next_step' hook injected."""
+        print(f"\n{'='*50}\n{msg}\n{'='*50}")
+        if HAS_IPYTHON:
+
+            def next_step():
+                self.step_mode = True
+                print("Step mode activated. Proceeding to the next @dev_hook...")
+                from IPython import get_ipython
+
+                if get_ipython() is not None:
+                    get_ipython().ask_exit()
+
+            local_vars["next_step"] = next_step
+            local_vars["DevState"] = self
+            embed(
+                header="Type 'exit' to resume normal execution.\nType 'next_step()' to pause at the very next @dev_hook.",
+                user_ns=local_vars,
+            )
+        else:
+            print("Type 'c' to continue, or 'n' to step lines in pdb.")
+            pdb.set_trace()
+
+    def _apply_aberrations(
+        self, spec: Any, args_dict: Dict[str, Any], step_name: str
+    ) -> None:
+        """Applies instrumental wavelength/velocity shifts, LSF scaling, or continuum ripples."""
+        w = spec.wavelength.value
+        f = spec.flux.value
+
+        v_shift = float(args_dict.get("v_shift_kms", 0.0))
+        w_shift = float(args_dict.get("wave_shift_aa", 0.0))
+        if v_shift != 0.0:
+            w[:] = w * (1.0 + v_shift / C_KMS)
+        if w_shift != 0.0:
+            w[:] = w + w_shift
+
+        lsf_scale = float(args_dict.get("lsf_scale", 1.0))
+        if lsf_scale != 1.0 and spec.resolution_kms is not None:
+            spec.resolution_kms[:] = spec.resolution_kms * lsf_scale
+
+        rip_amp = float(args_dict.get("ripple_amp", 0.0))
+        rip_period = float(args_dict.get("ripple_period_aa", 250.0))
+        if rip_amp != 0.0 and rip_period > 0:
+            med_f = (
+                float(np.nanmedian(np.abs(f[np.isfinite(f)])))
+                if np.any(np.isfinite(f))
+                else 1.0
+            )
+            f[:] = f + rip_amp * med_f * np.sin(2.0 * np.pi * w / rip_period)
+
+        print(
+            f"[ABERRATE_INSTRUMENT @ {step_name}] Applied v_shift={v_shift} km/s, "
+            f"wave_shift={w_shift} A, lsf_scale={lsf_scale}, ripple_amp={rip_amp}"
+        )
+
+    def _apply_artifacts(
+        self, spec: Any, args_dict: Dict[str, Any], step_name: str
+    ) -> None:
+        """Injects cosmic-ray spikes or detector chip-gap NaN troughs into `spec`."""
+        w = spec.wavelength.value
+        f = spec.flux.value
+        e = spec.uncertainty.value
+        mode = str(args_dict.get("mode", args_dict.get("MODE", "cosmic_ray"))).lower()
+
+        if mode == "cosmic_ray":
+            snr_spike = float(args_dict.get("snr", 100.0))
+            target_wave = args_dict.get("wave", None)
+            count = int(args_dict.get("count", 1))
+            width_pix = int(args_dict.get("width_pix", 1))
+
+            if target_wave is not None:
+                waves = (
+                    [target_wave] if not isinstance(target_wave, list) else target_wave
+                )
+                indices = [int(np.argmin(np.abs(w - float(tw)))) for tw in waves]
+            else:
+                valid_idx = np.where(~spec.mask & np.isfinite(f))[0]
+                indices = (
+                    np.random.choice(
+                        valid_idx, size=min(count, len(valid_idx)), replace=False
+                    ).tolist()
+                    if len(valid_idx) > 0
+                    else []
+                )
+
+            for idx in indices:
+                lo = max(0, idx - width_pix // 2)
+                hi = min(len(f), lo + max(1, width_pix))
+                local_err = max(float(np.nanmedian(e[lo:hi])), 1e-4)
+                f[lo:hi] += snr_spike * local_err
+
+            print(
+                f"[INJECT_ARTIFACT @ {step_name}] Injected {len(indices)} cosmic-ray spike(s) ({snr_spike} sigma)."
+            )
+
+        elif mode in ("chip_gap", "nan_trough"):
+            center_w = float(args_dict.get("wave", np.nanmedian(w)))
+            width_aa = float(args_dict.get("width_aa", 30.0))
+            gap_mask = np.abs(w - center_w) <= (width_aa / 2.0)
+            f[gap_mask] = np.nan
+            spec.mask[gap_mask] = True
+            print(
+                f"[INJECT_ARTIFACT @ {step_name}] Masked chip gap at {center_w:.1f} +/- {width_aa/2:.1f} A ({int(np.sum(gap_mask))} pixels)."
+            )
+
+    def emit(self, event_name: str, context_locals: Optional[Dict] = None) -> None:
+        """Inline event listener for mid-logic breakpoints, optimizer tracking, and variable watches."""
+        if not self.is_active:
+            return
+
+        context = context_locals or {}
+
+        # 1. Handle Inline Optimizer Tracking (e.g. post_narrow_fit, post_broad_fit)
+        if self._is_enabled("TRACK_OPTIMIZER", event_name) is not None:
+            comp_obj = context.get("comp")
+            comp_name = getattr(comp_obj, "name", event_name)
+            for res_key in (
+                "result_a",
+                "result_b",
+                "winning_fit",
+                "res_p1",
+                "co_res",
+                "fe_res",
+            ):
+                if res_key in context:
+                    opt_meta = _extract_optimizer_metrics(
+                        context[res_key], label=f"{event_name}:{comp_name}:{res_key}"
+                    )
+                    if opt_meta is not None:
+                        self.telemetry["optimizer"].append(opt_meta)
+
+        # 2. Handle Inline Pauses
+        if event_name in self.directives["PAUSE"]:
+            args = self.directives["PAUSE"][event_name]
+            condition = args.get("CONDITION", "True")
+            try:
+                if eval(condition, globals(), context):
+                    self.trigger_pause(f"DEV PAUSE INLINE EVENT: {event_name}", context)
+            except Exception as e:
+                log.error(f"Pause condition '{condition}' failed evaluation: {e}")
+
+        # 3. Handle Inline Visualizations
+        if event_name in self.directives["VISUALIZE"]:
+            args = self.directives["VISUALIZE"][event_name]
+            save_path = args.get("SAVE", None)
+            import matplotlib.pyplot as plt
+
+            fig = context.get("fig") or plt.gcf()
+            if save_path:
+                os.makedirs(save_path, exist_ok=True)
+                full_path = os.path.join(save_path, f"vis_{event_name}.png")
+                fig.savefig(full_path, bbox_inches="tight")
+                print(f"[VISUALIZE] Saved trace to {full_path}")
+            else:
+                plt.show(block=True)
+
+        # 4. Handle Variable Watches
+        for var_name, args in self.directives["WATCH"].items():
+            if var_name in context:
+                current_val = context[var_name]
+                prev_val = self._shadow_watch.get(var_name, None)
+
+                changed = False
+                if isinstance(current_val, np.ndarray) and isinstance(
+                    prev_val, np.ndarray
+                ):
+                    if current_val.shape == prev_val.shape:
+                        changed = not np.array_equal(current_val, prev_val)
+                    else:
+                        changed = True
+                else:
+                    changed = current_val != prev_val
+
+                if changed:
+                    msg = f"[WATCH] '{var_name}' altered at '{event_name}':\n  OLD: {prev_val}\n  NEW: {current_val}"
+                    self.telemetry["watch"].append(
+                        {
+                            "event": event_name,
+                            "variable": var_name,
+                            "new": str(current_val),
+                        }
+                    )
+                    log_file = args.get("LOG", None)
+                    if log_file:
+                        with open(log_file, "a") as f:
+                            f.write(msg + "\n")
+                    else:
+                        print(msg)
+                    self._shadow_watch[var_name] = (
+                        np.copy(current_val)
+                        if isinstance(current_val, np.ndarray)
+                        else current_val
+                    )
+
+    def execute_hook(
+        self, step_name: str, func: Callable, args: tuple, kwargs: dict
+    ) -> Any:
+        """Master routing switchboard for the @dev_hook decorator."""
+        if step_name in self.directives["FORCE_FAIL"]:
+            log.critical(f"DEV_TOOL: Forcing artificial failure at {step_name}")
+            raise IcarusConvergenceError(
+                f"Artificial dev forced failure at {step_name}"
+            )
+
+        if step_name in self.directives["BYPASS"]:
+            ret_str = self.directives["BYPASS"][step_name].get("RETURN", "None")
+            log.warning(
+                f"DEV_TOOL: Bypassing {step_name}, returning injected structure."
+            )
+            return ast.literal_eval(ret_str)
+
+        if step_name in self.directives["INJECT"]:
+            inject_args = self.directives["INJECT"][step_name]
+            log.info(f"DEV_TOOL: Overwriting kwargs for {step_name}: {inject_args}")
+            kwargs.update(inject_args)
+
+        spec_in = _find_spectrum(args, kwargs)
+
+        # Pre-execution Instrument Aberration
+        aberrate_cfg = self.directives["ABERRATE_INSTRUMENT"].get(step_name)
+        if aberrate_cfg is not None and spec_in is not None:
+            self._apply_aberrations(spec_in, aberrate_cfg, step_name)
+
+        # Pre-execution Detector Artifact Injection
+        artifact_cfg = self.directives["INJECT_ARTIFACT"].get(step_name)
+        if artifact_cfg is not None and spec_in is not None:
+            self._apply_artifacts(spec_in, artifact_cfg, step_name)
+
+        # Pre-execution Synthetic Emission Line Injection
+        for cmd in ["SYNTH_INJECT", "SYNTH_ISOLATE"]:
+            if step_name in self.directives[cmd] and spec_in is not None:
+                args_dict = self.directives[cmd][step_name]
+                flux_val = args_dict.get("flux", 0.0)
+                wave_val = args_dict.get("wave", 0.0)
+                sigma_val = args_dict.get("sigma", 2.0)
+
+                if not isinstance(flux_val, list):
+                    flux_val = [flux_val]
+                if not isinstance(wave_val, list):
+                    wave_val = [wave_val]
+                if not isinstance(sigma_val, list):
+                    sigma_val = [sigma_val]
+
+                w = spec_in.wavelength.value
+                f = spec_in.flux.value
+                for fw, ww, sw in zip(flux_val, wave_val, sigma_val):
+                    spike = float(fw) * np.exp(
+                        -0.5 * ((w - float(ww)) / float(sw)) ** 2
+                    )
+                    f[:] = f + spike
+                print(
+                    f"[{cmd} @ {step_name}] Injected synthetic emission features at {wave_val} A"
+                )
+
+                if cmd == "SYNTH_ISOLATE":
+                    self.directives["ISOLATE"]["GLOBAL"] = {"wave": wave_val}
+
+        profile_active = self._is_enabled("PROFILE", step_name) is not None
+        if profile_active:
+            t_start = time.perf_counter()
+
+        mem_active = self._is_enabled("TRACE_MEMORY", step_name) is not None
+        if mem_active:
+            if not tracemalloc.is_tracing():
+                tracemalloc.start()
+            m_start, _ = tracemalloc.get_traced_memory()
+
+        pause_args = self.directives["PAUSE"].get(step_name, {})
+        should_pause_before = self.step_mode or "-b" in pause_args
+
+        if should_pause_before:
+            condition = pause_args.get("CONDITION", "True")
+            try:
+                if eval(condition, globals(), locals()):
+                    self.step_mode = False
+                    self.trigger_pause(f"DEV PAUSE BEFORE: {step_name}", locals())
+            except Exception as e:
+                log.error(f"Pause condition '{condition}' failed: {e}")
+
+        if step_name in self.directives["PERTURB"]:
+            p_cfg = self.directives["PERTURB"][step_name]
+            iterations = int(p_cfg.get("iterations", 5))
+            mode = str(p_cfg.get("MODE", p_cfg.get("mode", "gaussian"))).lower()
+            snr_scale = float(p_cfg.get("noise_scale", 1.0))
+            print(
+                f"[PERTURB] Running {step_name} {iterations} times with {mode} noise (scale={snr_scale}x)..."
+            )
+
+            original_flux = np.copy(spec_in.flux.value) if spec_in is not None else None
+            results_pool: List[Any] = []
+
+            for _ in range(iterations):
+                if spec_in is not None and original_flux is not None:
+                    err = np.maximum(spec_in.uncertainty.value, 1e-5) * snr_scale
+                    if mode == "gaussian":
+                        noise = np.random.normal(loc=0.0, scale=err)
+                    elif mode == "poisson":
+                        lam = np.maximum(np.abs(original_flux), 1e-4)
+                        noise = (np.random.poisson(lam=lam) - lam) * snr_scale
+                    else:
+                        noise = 0.0
+                    spec_in.flux.value[:] = original_flux + noise
+
+                res = func(*args, **kwargs)
+                results_pool.append(res)
+
+            if spec_in is not None and original_flux is not None:
+                spec_in.flux.value[:] = original_flux
+
+            self.telemetry["perturb"][step_name] = {
+                "iterations": iterations,
+                "mode": mode,
+                "noise_scale": snr_scale,
+            }
+            result = results_pool[-1]
+        else:
+            result = func(*args, **kwargs)
+
+        # Post-execution hooks when `build_spectrum` returns a newly created Spectrum1D
+        if spec_in is None:
+            spec_out = _find_spectrum((), {}, result=result)
+            if spec_out is not None:
+                if aberrate_cfg is not None:
+                    self._apply_aberrations(spec_out, aberrate_cfg, step_name)
+                if artifact_cfg is not None:
+                    self._apply_artifacts(spec_out, artifact_cfg, step_name)
+
+        # Record Optimizer Telemetry if function returned a ModelResult
+        if self._is_enabled("TRACK_OPTIMIZER", step_name) is not None:
+            comp_arg = next(
+                (a for a in args if hasattr(a, "lines") and hasattr(a, "name")), None
+            )
+            lbl = f"{step_name}:{getattr(comp_arg, 'name', '')}".rstrip(":")
+            opt_meta = _extract_optimizer_metrics(result, label=lbl)
+            if opt_meta is not None:
+                self.telemetry["optimizer"].append(opt_meta)
+
+        if "-a" in pause_args:
+            condition = pause_args.get("CONDITION", "True")
+            try:
+                if eval(condition, globals(), locals()):
+                    self.trigger_pause(f"DEV PAUSE AFTER: {step_name}", locals())
+            except Exception as e:
+                log.error(f"Pause condition '{condition}' failed: {e}")
+
+        if profile_active:
+            elapsed = (time.perf_counter() - t_start) * 1000.0
+            self.telemetry["time"].setdefault(step_name, []).append(elapsed)
+            print(f"[PROFILE] {step_name}: {elapsed:.2f} ms")
+
+        if mem_active:
+            m_end, m_peak = tracemalloc.get_traced_memory()
+            delta_mb = (m_end - m_start) / (1024 * 1024)
+            peak_mb = m_peak / (1024 * 1024)
+            self.telemetry["memory"][step_name] = {
+                "delta_mb": delta_mb,
+                "peak_mb": peak_mb,
+            }
+            print(f"[MEMORY] {step_name}: {delta_mb:+.3f} MB (Peak: {peak_mb:.3f} MB)")
+
+        if step_name in self.directives["DEBUG"]:
+            depth = int(self.directives["DEBUG"][step_name].get("DEPTH", 2))
+            print(f"\n{'='*50}\nDEBUG TRACE: {step_name}\n{'='*50}")
+            print("--- KWARGS ---")
+            pprint.pprint(kwargs, depth=depth)
+            print("--- RETURN ---")
+            pprint.pprint(result, depth=depth)
+            print("==================================================\n")
+
+        return result
+
+
+DevState = _DevState()
+
+
+def dev_hook(step_name: Optional[str] = None):
+    """
+    Function wrapper that registers the step in the DAG and routes execution
+    through the DevState engine if a .dev file is active.
+    """
+
+    def decorator(func: Callable):
+        name = step_name or func.__name__
+        DevState.dag_registry[name] = func.__module__
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            if not DevState.is_active:
+                return func(*args, **kwargs)
+            return DevState.execute_hook(name, func, args, kwargs)
+
+        return wrapper
+
+    return decorator
+"""
+exceptions.py
+
+Custom exception hierarchy for the ICARUS pipeline.
+Ensures precise error tracing and isolates specific domain failures.
+"""
+
+__project__ = "ICARUS"
+__author__ = "Joseph Havens"
+__version__ = "3.4.0"
+
+
+class IcarusError(Exception):
+    """Base exception for all ICARUS pipeline errors."""
+
+    pass
+
+
+class IcarusDataDimensionError(IcarusError):
+    """Raised when spectral arrays (flux, wavelength, error) have mismatched shapes or invalid bounds."""
+
+    pass
+
+
+class IcarusIngestionError(IcarusError):
+    """Raised when FITS files or catalogs cannot be located, parsed, or dynamically scaled."""
+
+    pass
+
+
+class IcarusConfigurationError(IcarusError):
+    """Raised when the YAML configuration contains invalid parameters or unphysical units."""
+
+    pass
+
+
+class IcarusKinematicError(IcarusError):
+    """Raised when physical constraints (e.g., velocity bounds) are mathematically invalid."""
+
+    pass
+
+
+class IcarusTemplateError(IcarusError):
+    """Raised when empirical Fe II templates or dispersion curves cannot be loaded or convolved."""
+
+    pass
+
+
+class IcarusConvergenceError(IcarusError):
+    """Raised when the MCMC or LMFIT optimizer entirely fails to find a mathematically valid solution."""
+
+    pass
+"""
+ingest.py
+
+The universal translator and file crawler for the ICARUS pipeline.
+Handles the ingestion of metadata catalogs and the strict unpacking, dynamic
+FITS schema resolution (including SDSS loglam/ivar, custom column mappings, and
+1D WCS ImageHDUs), unit conversion, instrumental resolution mapping, and O(1) scaling.
+"""
+
+__project__ = "ICARUS"
+__author__ = "Joseph Havens"
+__version__ = "3.4.0"
+
+import warnings
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import astropy.units as u
+import numpy as np
+import pandas as pd
+from astropy import constants as const
+from astropy.io import fits
+from astropy.table import QTable
+from astropy.utils.exceptions import AstropyWarning
+
+from .containers import Spectrum1D, Target
+from .dev_tools import DevState, dev_hook
+from .exceptions import IcarusIngestionError
+from .logger import get_icarus_logger
+
+log = get_icarus_logger()
+STANDARD_FLUX_UNIT = u.Unit("erg / (cm2 s AA)")
+C_KMS = const.c.to("km/s").value
+FWHM_TO_SIGMA = 2.0 * np.sqrt(2.0 * np.log(2.0))
+
+
+class CatalogRegistry:
+    def __init__(self, catalog_path: Union[str, Path]):
+        self.catalog_path = Path(catalog_path)
+        if not self.catalog_path.exists():
+            log.critical(f"Master catalog not found at {self.catalog_path}")
+            raise IcarusIngestionError(f"Master catalog missing: {self.catalog_path}")
+
+        self.table = self._load_catalog()
+        self._normalize_columns()
+        log.info(
+            f"Successfully loaded {len(self.table)} targets from {self.catalog_path.name}"
+        )
+
+    def _load_catalog(self) -> QTable:
+        suffix = self.catalog_path.suffix.lower()
+        if suffix == ".csv":
+            return QTable.from_pandas(pd.read_csv(self.catalog_path))
+        elif suffix in [".fits", ".fit"]:
+            return QTable.read(self.catalog_path)
+        return QTable.read(self.catalog_path, format="ascii")
+
+    def _normalize_columns(self) -> None:
+        col_map = {
+            "target_id": [
+                "id",
+                "gid",
+                "sourceid",
+                "source_number",
+                "galaxy_id",
+                "target_id",
+            ],
+            "redshift": ["z", "redshift", "z_spec", "z_used", "z_phot"],
+            "sample": ["sample", "survey"],
+            "setup": ["setup", "instrument", "grating"],
+        }
+        existing_cols = [c.lower() for c in self.table.colnames]
+
+        for standard_name, aliases in col_map.items():
+            for alias in aliases:
+                if alias in existing_cols and standard_name not in self.table.colnames:
+                    original_col = self.table.colnames[existing_cols.index(alias)]
+                    self.table.rename_column(original_col, standard_name)
+                    break
+
+        if (
+            "target_id" not in self.table.colnames
+            or "redshift" not in self.table.colnames
+        ):
+            raise IcarusIngestionError(
+                "Catalog must contain at minimum a target ID and redshift."
+            )
+
+    def generate_targets(self) -> List[Target]:
+        targets = []
+        for row in self.table:
+            t_id = row["target_id"]
+            z = row["redshift"]
+
+            t = Target(
+                target_id=str(t_id.value if hasattr(t_id, "value") else t_id),
+                redshift=float(z.value if hasattr(z, "value") else z),
+                sample=str(row["sample"]) if "sample" in row.colnames else None,
+                setup=str(row["setup"]) if "setup" in row.colnames else None,
+            )
+            targets.append(t)
+        return targets
+
+
+class ObservationBuilder:
+    DEFAULT_ALIASES: Dict[str, List[str]] = {
+        "wave": ["WAVELENGTH", "WAVE", "wave", "LAMBDA", "lambda", "lam"],
+        "loglam": ["LOGLAM", "loglam", "LOG_WAVE", "log_wave"],
+        "flux": ["FLUX", "flux", "SPEC", "spec", "F_LAMBDA", "f_lambda", "DATA"],
+        "err": [
+            "ERROR",
+            "ERR",
+            "err",
+            "FLUX_ERROR",
+            "FLUX_ERR",
+            "ERR_FLUX",
+            "SIGMA",
+            "sigma",
+            "UNCERTAINTY",
+        ],
+        "ivar": ["IVAR", "ivar", "INVVAR", "invvar", "IVAR_FLUX"],
+        "var": ["VAR", "var", "VARIANCE", "variance"],
+        "mask": ["MASK", "mask", "AND_MASK", "DQ", "dq", "FLAGS"],
+    }
+
+    def __init__(
+        self,
+        data_directory: Optional[Union[str, Path]] = None,
+        column_mapping: Optional[Dict[str, str]] = None,
+    ):
+        self.data_dir = Path(data_directory) if data_directory else Path(".")
+        self.column_mapping = column_mapping or {}
+
+    def locate_file(self, target: Target) -> Optional[Path]:
+        gid_str = str(target.target_id)
+        if Path(gid_str).exists():
+            return Path(gid_str)
+        matches = list(self.data_dir.rglob(f"*{gid_str}*.fits"))
+
+        if not matches:
+            log.warning(f"No FITS file found for Target ID: {gid_str}")
+            return None
+        return matches[0]
+
+    @staticmethod
+    def _read_fits_table_or_wcs(filepath: Path) -> QTable:
+        """
+        Reads a FITS file as a QTable if a table HDU is present, or falls back
+        to reconstructing WAVE, FLUX, and ERR from a 1D WCS ImageHDU.
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", AstropyWarning)
+            try:
+                return QTable.read(filepath)
+            except Exception:
+                pass
+
+        with fits.open(filepath) as hdul:
+            for hdu in hdul:
+                if isinstance(hdu, (fits.BinTableHDU, fits.TableHDU)):
+                    return QTable.read(hdu)
+
+            # Fallback to 1D WCS Primary/ImageHDU
+            primary = hdul[0]
+            if primary.data is None:
+                raise IcarusIngestionError(
+                    f"No table or image data found in {filepath.name}"
+                )
+
+            data_arr = np.asarray(primary.data, dtype=np.float64)
+            flux_1d = data_arr[0].flatten() if data_arr.ndim > 1 else data_arr.flatten()
+            n_pix = len(flux_1d)
+
+            hdr = primary.header
+            crval = float(hdr.get("CRVAL1", 1.0))
+            cdelt = float(hdr.get("CDELT1", hdr.get("CD1_1", 1.0)))
+            crpix = float(hdr.get("CRPIX1", 1.0))
+            pix_grid = np.arange(n_pix, dtype=np.float64) + 1.0 - crpix
+            wave_1d = crval + pix_grid * cdelt
+
+            if len(hdul) > 1 and hdul[1].data is not None:
+                err_1d = np.asarray(hdul[1].data, dtype=np.float64).flatten()
+            elif data_arr.ndim > 1 and data_arr.shape[0] > 1:
+                err_1d = data_arr[1].flatten()
+            else:
+                err_1d = np.full_like(flux_1d, np.nanstd(flux_1d) * 0.1)
+
+            tbl = QTable()
+            tbl["WAVE"] = wave_1d
+            tbl["FLUX"] = flux_1d
+            tbl["ERR"] = err_1d
+            return tbl
+
+    @classmethod
+    def _resolve_column_name(
+        cls,
+        data_table: QTable,
+        role: str,
+        active_map: Dict[str, str],
+    ) -> Optional[str]:
+        """
+        Resolves the actual column name in `data_table` for a given `role`
+        ('wave', 'loglam', 'flux', 'err', 'ivar', 'var', 'mask') using
+        case-insensitive matching against user overrides first, then standard aliases.
+        """
+        col_lookup = {c.lower(): c for c in data_table.colnames}
+
+        if role in active_map and active_map[role]:
+            requested = active_map[role]
+            if requested in data_table.colnames:
+                return requested
+            if requested.lower() in col_lookup:
+                return col_lookup[requested.lower()]
+
+        for candidate in cls.DEFAULT_ALIASES.get(role, []):
+            if candidate in data_table.colnames:
+                return candidate
+            if candidate.lower() in col_lookup:
+                return col_lookup[candidate.lower()]
+
+        return None
+
+    @staticmethod
+    def _extract_and_flatten(
+        data_table: QTable, col_name: str
+    ) -> Tuple[np.ndarray, Optional[u.Unit]]:
+        raw_col = data_table[col_name]
+        if len(raw_col) == 1 and hasattr(raw_col, "shape") and len(raw_col.shape) > 1:
+            data = raw_col[0]
+        else:
+            data = raw_col
+
+        unit = data.unit if hasattr(data, "unit") else None
+        val = np.asarray(
+            data.value if hasattr(data, "value") else data, dtype=np.float64
+        ).flatten()
+        return val, unit
+
+    @staticmethod
+    def _compute_instrumental_sigma_kms(
+        wave_obs_aa: np.ndarray, config: Any
+    ) -> np.ndarray:
+        """
+        Evaluates instrumental velocity dispersion sigma_inst(lambda_obs) [km/s]
+        at every observed wavelength pixel prior to de-redshifting.
+        """
+        disp_curve_path = getattr(config, "dispersion_curve", None)
+        if disp_curve_path is not None:
+            path_obj = Path(disp_curve_path)
+            if not path_obj.exists():
+                pkg_disp = (
+                    Path(__file__).resolve().parent.parent
+                    / "data"
+                    / "dispersion"
+                    / path_obj.name
+                )
+                if pkg_disp.exists():
+                    path_obj = pkg_disp
+
+            if path_obj.exists():
+                try:
+                    disp_table = QTable.read(path_obj)
+                    w_col = disp_table.colnames[0]
+                    r_col = (
+                        "R" if "R" in disp_table.colnames else disp_table.colnames[-1]
+                    )
+                    w_disp = disp_table[w_col]
+                    w_disp_aa = (
+                        w_disp.to(u.AA).value
+                        if hasattr(w_disp, "unit") and w_disp.unit is not None
+                        else np.asarray(w_disp, dtype=float) * 1e4
+                    )
+                    r_vals = np.asarray(
+                        (
+                            disp_table[r_col].value
+                            if hasattr(disp_table[r_col], "value")
+                            else disp_table[r_col]
+                        ),
+                        dtype=float,
+                    )
+                    r_interp = np.interp(
+                        wave_obs_aa, w_disp_aa, r_vals, left=r_vals[0], right=r_vals[-1]
+                    )
+                    return C_KMS / (FWHM_TO_SIGMA * np.maximum(r_interp, 10.0))
+                except Exception as e:
+                    log.warning(
+                        f"Dispersion curve load failed ({path_obj.name}): {e}. Using scalar fallback."
+                    )
+
+        res_qty = getattr(config, "resolution", None)
+        if res_qty is not None:
+            try:
+                q = u.Quantity(res_qty)
+                if q.unit.is_equivalent(u.km / u.s):
+                    fwhm_kms = float(q.to(u.km / u.s).value)
+                    return np.full_like(
+                        wave_obs_aa, fwhm_kms / FWHM_TO_SIGMA, dtype=np.float64
+                    )
+                elif q.unit == u.dimensionless_unscaled:
+                    r_val = max(float(q.value), 10.0)
+                    return np.full_like(
+                        wave_obs_aa, C_KMS / (FWHM_TO_SIGMA * r_val), dtype=np.float64
+                    )
+            except Exception:
+                pass
+
+        return np.full_like(wave_obs_aa, 300.0 / FWHM_TO_SIGMA, dtype=np.float64)
+
+    @dev_hook(step_name="build_spectrum")
+    def build_spectrum(
+        self,
+        target: Target,
+        filepath: Union[str, Path],
+        config: Any = None,
+        dry_run: bool = False,
+        column_mapping: Optional[Dict[str, str]] = None,
+    ) -> Optional[Spectrum1D]:
+        DevState.emit("pre_build_spectrum", locals())
+
+        filepath = Path(filepath)
+        if not filepath.exists():
+            raise IcarusIngestionError(f"Spectral file does not exist: {filepath}")
+
+        if dry_run:
+            log.info(f"[DRY RUN] Validated access to {filepath.name}")
+            return None
+
+        history = [f"Ingested from {filepath.name}"]
+
+        try:
+            with fits.open(filepath) as hdul:
+                meta = dict(hdul[0].header)
+                z_hdr = None
+                for z_key in ("Z", "REDSHIFT", "Z_SPEC", "Z_VI"):
+                    if z_key in meta and isinstance(meta[z_key], (int, float)):
+                        z_hdr = float(meta[z_key])
+                        break
+
+            if target.redshift <= 0.0 and z_hdr is not None and z_hdr > 0.0:
+                target = Target(
+                    target_id=target.target_id,
+                    redshift=z_hdr,
+                    sample=target.sample,
+                    setup=target.setup,
+                    pointing=target.pointing,
+                    ra=target.ra,
+                    dec=target.dec,
+                )
+                history.append(f"Adopted header redshift z={z_hdr:.4f}")
+
+            data_table = self._read_fits_table_or_wcs(filepath)
+
+            cfg_map = getattr(config, "column_mapping", {}) if config else {}
+            active_map = {**cfg_map, **self.column_mapping, **(column_mapping or {})}
+
+            # 1. Resolve Wavelength or Log-Wavelength Column
+            wave_col = self._resolve_column_name(data_table, "wave", active_map)
+            loglam_col = self._resolve_column_name(data_table, "loglam", active_map)
+
+            if wave_col is not None and wave_col in data_table.colnames:
+                wave_vals, wave_unit = self._extract_and_flatten(data_table, wave_col)
+            elif loglam_col is not None and loglam_col in data_table.colnames:
+                loglam_vals, _ = self._extract_and_flatten(data_table, loglam_col)
+                wave_vals = 10.0**loglam_vals
+                wave_unit = u.AA
+                history.append(
+                    f"Converted log10 wavelength column '{loglam_col}' to AA"
+                )
+            else:
+                raise IcarusIngestionError(
+                    f"Could not locate wavelength column in {filepath.name} (Available: {data_table.colnames})"
+                )
+
+            # 2. Resolve Flux Column
+            flux_col = self._resolve_column_name(data_table, "flux", active_map)
+            if flux_col is None or flux_col not in data_table.colnames:
+                raise IcarusIngestionError(
+                    f"Could not locate flux column in {filepath.name} (Available: {data_table.colnames})"
+                )
+            flux_vals, flux_unit = self._extract_and_flatten(data_table, flux_col)
+
+            # 3. Resolve Uncertainty, Inverse Variance (ivar), or Variance (var) Column
+            err_col = self._resolve_column_name(data_table, "err", active_map)
+            ivar_col = self._resolve_column_name(data_table, "ivar", active_map)
+            var_col = self._resolve_column_name(data_table, "var", active_map)
+
+            ivar_zero_mask = np.zeros_like(flux_vals, dtype=bool)
+            if err_col is not None and err_col in data_table.colnames:
+                err_vals, err_unit = self._extract_and_flatten(data_table, err_col)
+            elif ivar_col is not None and ivar_col in data_table.colnames:
+                ivar_vals, _ = self._extract_and_flatten(data_table, ivar_col)
+                ivar_zero_mask = (~np.isfinite(ivar_vals)) | (ivar_vals <= 0)
+                err_vals = np.where(
+                    ~ivar_zero_mask,
+                    1.0 / np.sqrt(np.maximum(ivar_vals, 1e-30)),
+                    np.nan,
+                )
+                err_unit = flux_unit
+                history.append(
+                    f"Converted inverse variance column '{ivar_col}' to 1-sigma uncertainty"
+                )
+            elif var_col is not None and var_col in data_table.colnames:
+                var_vals, _ = self._extract_and_flatten(data_table, var_col)
+                ivar_zero_mask = (~np.isfinite(var_vals)) | (var_vals <= 0)
+                err_vals = np.where(
+                    ~ivar_zero_mask, np.sqrt(np.maximum(var_vals, 0.0)), np.nan
+                )
+                err_unit = flux_unit
+            else:
+                raise IcarusIngestionError(
+                    f"Could not locate uncertainty/ivar column in {filepath.name} (Available: {data_table.colnames})"
+                )
+
+            # 4. Optional Bitmask / DQ Column
+            mask_col = self._resolve_column_name(data_table, "mask", active_map)
+            file_dq_mask = np.zeros_like(flux_vals, dtype=bool)
+            if mask_col is not None and mask_col in data_table.colnames:
+                raw_m, _ = self._extract_and_flatten(data_table, mask_col)
+                file_dq_mask = raw_m != 0
+
+            # --- EXPLICIT CONFIGURATION & PRE-SCALED FITS HANDLING ---
+            try:
+                fb_wave = u.Unit(getattr(config, "wave_unit", "um"))
+                fb_flux = u.Unit(getattr(config, "flux_unit", "1e-20 erg / (cm2 s AA)"))
+
+                orig_wave_unit = (
+                    wave_unit
+                    if (wave_unit is not None and wave_unit != u.dimensionless_unscaled)
+                    else fb_wave
+                )
+
+                if (
+                    flux_unit is None
+                    or flux_unit == u.dimensionless_unscaled
+                    or (
+                        getattr(flux_unit, "scale", 1.0) == 1.0
+                        and getattr(fb_flux, "scale", 1.0) != 1.0
+                    )
+                ):
+                    orig_flux_unit = fb_flux
+                    orig_err_unit = fb_flux
+                else:
+                    orig_flux_unit = flux_unit
+                    orig_err_unit = err_unit if err_unit else flux_unit
+
+            except Exception as e:
+                log.warning(
+                    f"[{target.target_id}] Fallback unit parsing failed: {e}. Coercing manually."
+                )
+                orig_wave_unit = wave_unit if wave_unit else u.um
+                orig_flux_unit = (
+                    flux_unit if flux_unit else u.Unit("1e-20 erg / (cm2 s AA)")
+                )
+                orig_err_unit = err_unit if err_unit else orig_flux_unit
+
+            # --- Robust Spectral Axis Transformation (Vacuum Angstroms) ---
+            wave_qty_obs = (wave_vals * orig_wave_unit).to(
+                u.AA, equivalencies=u.spectral()
+            )
+
+            # --- Evaluate Instrumental Dispersion Prior to De-Redshifting ---
+            inst_sigma_kms = self._compute_instrumental_sigma_kms(
+                wave_qty_obs.value, config
+            )
+
+            # --- Robust Flux Axis Density Standardization ---
+            flux_qty_obs = (flux_vals * orig_flux_unit).to(
+                STANDARD_FLUX_UNIT,
+                equivalencies=u.spectral_density(wave_qty_obs),
+            )
+            err_qty_obs = (err_vals * orig_err_unit).to(
+                STANDARD_FLUX_UNIT,
+                equivalencies=u.spectral_density(wave_qty_obs),
+            )
+
+            finite_obs = np.abs(
+                flux_qty_obs.value[
+                    np.isfinite(flux_qty_obs.value) & (flux_qty_obs.value != 0)
+                ]
+            )
+            if len(finite_obs) > 0 and np.nanmedian(finite_obs) > 1e-8:
+                log.info(
+                    f"[{target.target_id}] Detected unscaled O(1) FITS flux array; applying 1e-20 cgs normalization."
+                )
+                flux_qty_obs = flux_qty_obs * 1e-20
+                err_qty_obs = err_qty_obs * 1e-20
+
+            # --- Cosmological De-Redshifting ---
+            z = target.redshift
+            if z > 0:
+                wave_qty = wave_qty_obs / (1.0 + z)
+                flux_qty = flux_qty_obs * (1.0 + z)
+                err_qty = err_qty_obs * (1.0 + z)
+                history.append(f"De-redshifted arrays from z={z:.4f} to rest-frame")
+            else:
+                wave_qty = wave_qty_obs
+                flux_qty = flux_qty_obs
+                err_qty = err_qty_obs
+
+            # --- Dynamic Scale Normalization ---
+            unmasked_flux = flux_qty.value[np.isfinite(flux_qty.value)]
+            non_zero_flux = np.abs(unmasked_flux[unmasked_flux != 0])
+
+            if len(non_zero_flux) == 0:
+                scale_factor = 1.0
+            else:
+                median_flux = float(np.nanmedian(non_zero_flux))
+                scale_factor = float(10.0 ** np.floor(np.log10(median_flux)))
+                if not np.isfinite(scale_factor) or scale_factor == 0:
+                    scale_factor = 1.0
+
+            norm_flux_qty = flux_qty / scale_factor
+            norm_err_qty = err_qty / scale_factor
+            history.append(
+                f"Dynamically scaled flux parameters by 10^{int(np.log10(scale_factor))} to stabilize optimizer"
+            )
+
+            mask_arr = (
+                ~np.isfinite(norm_flux_qty.value)
+                | ~np.isfinite(norm_err_qty.value)
+                | (norm_err_qty.value <= 0)
+                | ivar_zero_mask
+                | file_dq_mask
+            )
+
+            if not np.any(~mask_arr):
+                raise IcarusIngestionError("Data arrays are completely masked or NaN.")
+
+        except Exception as e:
+            log.error(f"FITS extraction failed for {target.target_id}: {e}")
+            raise IcarusIngestionError(f"Failed to extract or coerce data arrays: {e}")
+
+        spec_obj = Spectrum1D(
+            wavelength=wave_qty,
+            flux=norm_flux_qty,
+            uncertainty=norm_err_qty,
+            mask=mask_arr,
+            target=target,
+            spectral_unit=u.AA,
+            flux_unit=STANDARD_FLUX_UNIT,
+            flux_scale_factor=scale_factor,
+            resolution_kms=inst_sigma_kms,
+            meta=meta,
+            history=history,
+        )
+
+        DevState.emit(
+            "post_build_spectrum",
+            {"target_id": target.target_id, "scale_factor": scale_factor},
+        )
+        return spec_obj
+"""
+io.py
+
+Multi-Extension FITS (MEF) and Extended CSV (ECSV) output writer for ICARUS v3.4.
+Implements the 3-HDU standard (Primary Header, Row-Per-Line Parameters Table,
+and 1D Synthetic Model Spectrum Table) for seamless TOPCAT/Astropy interoperability.
+"""
+
+__project__ = "ICARUS"
+__author__ = "Joseph Havens"
+__version__ = "3.4.0"
+
+import datetime
+import warnings
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
+import astropy.units as u
+import numpy as np
+from astropy.io import fits
+from astropy.table import QTable
+from astropy.utils.exceptions import AstropyWarning
+
+from .containers import Spectrum1D
+from .logger import get_icarus_logger
+
+log = get_icarus_logger()
+
+
+class ResultWriter:
+    """Handles standardized 3-HDU FITS and flat ECSV serialization."""
+
+    @staticmethod
+    def build_line_catalog_table(
+        spectrum: Spectrum1D,
+        complex_fits: List[Any],
+        global_params: Dict[str, Any],
+    ) -> QTable:
+        """
+        Builds the HDU 1 ('LINE_CATALOG') row-per-line QTable (~50 rows x 23 columns).
+        Eliminates the 999-column FITS BINTABLE limit while preserving all TUNIT keys.
+        """
+        scale = spectrum.flux_scale_factor
+        rows = []
+
+        for comp, sliced_spec, fit_result in complex_fits:
+            redchi = (
+                float(fit_result.redchi)
+                if (fit_result is not None and fit_result.redchi is not None)
+                else np.nan
+            )
+            for line in comp.lines:
+                name = line.name
+                rest_w = float(line.rest_wavelength)
+                inst_sig = spectrum.get_inst_sigma_kms(rest_w)
+
+                # Narrow component metrics
+                n_amp = (
+                    float(global_params.get(f"{name}_narrow_amplitude", np.nan)) * scale
+                )
+                n_e16 = (
+                    float(global_params.get(f"{name}_narrow_amplitude_err16", np.nan))
+                    * scale
+                )
+                n_e84 = (
+                    float(global_params.get(f"{name}_narrow_amplitude_err84", np.nan))
+                    * scale
+                )
+                n_voff = float(global_params.get(f"{name}_narrow_v_offset", 0.0))
+                n_sig_obs = float(global_params.get(f"{name}_narrow_sigma_v", np.nan))
+                n_sig_int = (
+                    float(np.sqrt(max(n_sig_obs**2 - inst_sig**2, 0.0)))
+                    if np.isfinite(n_sig_obs)
+                    else np.nan
+                )
+
+                # Broad component metrics
+                b_amp = float(global_params.get(f"{name}_broad_amplitude", 0.0)) * scale
+                b_e16 = (
+                    float(global_params.get(f"{name}_broad_amplitude_err16", np.nan))
+                    * scale
+                )
+                b_e84 = (
+                    float(global_params.get(f"{name}_broad_amplitude_err84", np.nan))
+                    * scale
+                )
+                b_voff = float(global_params.get(f"{name}_broad_v_offset", np.nan))
+                b_sig_obs = float(global_params.get(f"{name}_broad_sigma_v", np.nan))
+                b_sig_int = (
+                    float(np.sqrt(max(b_sig_obs**2 - inst_sig**2, 0.0)))
+                    if np.isfinite(b_sig_obs)
+                    else np.nan
+                )
+
+                # Outflow component metrics
+                o_amp = (
+                    float(global_params.get(f"{name}_outflow_amplitude", 0.0)) * scale
+                )
+                o_voff = float(global_params.get(f"{name}_outflow_v_offset", np.nan))
+                o_sig_obs = float(global_params.get(f"{name}_outflow_sigma_v", np.nan))
+
+                cont_flux = (
+                    float(global_params.get(f"{name}_continuum_flux", 0.0)) * scale
+                )
+                ew_narrow = float(global_params.get(f"{name}_narrow_EW", np.nan))
+                ew_broad = float(global_params.get(f"{name}_broad_EW", np.nan))
+                snr = float(global_params.get(f"{name}_narrow_snr", 0.0))
+                is_ul = bool(global_params.get(f"{name}_narrow_is_upper_limit", True))
+
+                rows.append(
+                    {
+                        "LINE_NAME": name,
+                        "REST_WAVE": rest_w,
+                        "COMPLEX": comp.name,
+                        "AMP_NARROW": n_amp,
+                        "AMP_NARROW_ERR16": n_e16,
+                        "AMP_NARROW_ERR84": n_e84,
+                        "V_OFFSET_NARROW": n_voff,
+                        "SIGMA_V_NARROW_OBS": n_sig_obs,
+                        "SIGMA_V_NARROW_INT": n_sig_int,
+                        "AMP_BROAD": b_amp,
+                        "AMP_BROAD_ERR16": b_e16,
+                        "AMP_BROAD_ERR84": b_e84,
+                        "V_OFFSET_BROAD": b_voff,
+                        "SIGMA_V_BROAD_INT": b_sig_int,
+                        "AMP_OUTFLOW": o_amp,
+                        "V_OFFSET_OUTFLOW": o_voff,
+                        "SIGMA_V_OUTFLOW": o_sig_obs,
+                        "CONT_FLUX_DENS": cont_flux,
+                        "EW_NARROW": ew_narrow,
+                        "EW_BROAD": ew_broad,
+                        "SNR_NARROW": snr,
+                        "IS_UPPER_LIMIT": is_ul,
+                        "COMPLEX_REDCHI": redchi,
+                    }
+                )
+
+        if not rows:
+            tbl = QTable(
+                names=(
+                    "LINE_NAME",
+                    "REST_WAVE",
+                    "COMPLEX",
+                    "AMP_NARROW",
+                    "SNR_NARROW",
+                    "IS_UPPER_LIMIT",
+                ),
+                dtype=("U32", "f8", "U64", "f8", "f8", "bool"),
+            )
+            tbl.meta["EXTNAME"] = "LINE_CATALOG"
+            return tbl
+
+        tbl = QTable(rows=rows)
+        int_flux_unit = u.Unit("erg / (cm2 s)")
+        flux_dens_unit = u.Unit("erg / (cm2 s AA)")
+        vel_unit = u.km / u.s
+
+        tbl["REST_WAVE"].unit = u.AA
+        for col in (
+            "AMP_NARROW",
+            "AMP_NARROW_ERR16",
+            "AMP_NARROW_ERR84",
+            "AMP_BROAD",
+            "AMP_BROAD_ERR16",
+            "AMP_BROAD_ERR84",
+            "AMP_OUTFLOW",
+        ):
+            tbl[col].unit = int_flux_unit
+
+        for col in (
+            "V_OFFSET_NARROW",
+            "SIGMA_V_NARROW_OBS",
+            "SIGMA_V_NARROW_INT",
+            "V_OFFSET_BROAD",
+            "SIGMA_V_BROAD_INT",
+            "V_OFFSET_OUTFLOW",
+            "SIGMA_V_OUTFLOW",
+        ):
+            tbl[col].unit = vel_unit
+
+        tbl["CONT_FLUX_DENS"].unit = flux_dens_unit
+        tbl["EW_NARROW"].unit = u.AA
+        tbl["EW_BROAD"].unit = u.AA
+        tbl.meta["EXTNAME"] = "LINE_CATALOG"
+        return tbl
+
+    @staticmethod
+    def build_synthetic_spectrum_table(
+        spectrum: Spectrum1D,
+        continuum_eval: Optional[np.ndarray],
+        feii_eval: Optional[np.ndarray],
+        complex_fits: List[Any],
+    ) -> QTable:
+        """
+        Builds the HDU 2 ('SYNTH_SPEC') 1D table preserving rest-frame wavelengths,
+        observed data, decomposed physical components, and normalized pulls in CGS.
+        """
+        wave, flux, err = spectrum.to_ndarrays()
+        scale = spectrum.flux_scale_factor
+        n_pix = len(wave)
+
+        cont_pl = (
+            np.asarray(continuum_eval, dtype=np.float64)
+            if (continuum_eval is not None and len(continuum_eval) == n_pix)
+            else np.zeros(n_pix, dtype=np.float64)
+        )
+        cont_feii = (
+            np.asarray(feii_eval, dtype=np.float64)
+            if (feii_eval is not None and len(feii_eval) == n_pix)
+            else np.zeros(n_pix, dtype=np.float64)
+        )
+
+        comp_local_cont = np.copy(cont_pl)
+        comp_narrow = np.zeros(n_pix, dtype=np.float64)
+        comp_broad = np.zeros(n_pix, dtype=np.float64)
+        comp_outflow = np.zeros(n_pix, dtype=np.float64)
+        model_total = np.copy(cont_pl + cont_feii)
+
+        for comp, sliced_spec, fit_result in complex_fits:
+            if fit_result is None:
+                continue
+            x_c, _, _ = sliced_spec.to_ndarrays()
+            idx_mask = (wave >= np.min(x_c)) & (wave <= np.max(x_c)) & (~spectrum.mask)
+            if not np.any(idx_mask):
+                continue
+
+            x_sub = wave[idx_mask]
+            eval_comps = fit_result.eval_components(x=x_sub)
+            c_loc = eval_comps.get("cont_", np.zeros_like(x_sub))
+            comp_local_cont[idx_mask] = c_loc
+
+            n_sum = np.zeros_like(x_sub)
+            b_sum = np.zeros_like(x_sub)
+            o_sum = np.zeros_like(x_sub)
+
+            for cname, cdata in eval_comps.items():
+                if "narrow" in cname:
+                    n_sum += cdata
+                elif "broad" in cname:
+                    b_sum += cdata
+                elif "outflow" in cname:
+                    o_sum += cdata
+
+            comp_narrow[idx_mask] = n_sum
+            comp_broad[idx_mask] = b_sum
+            comp_outflow[idx_mask] = o_sum
+            model_total[idx_mask] = fit_result.eval(x=x_sub) + cont_feii[idx_mask]
+
+        safe_err = np.where(err > 0, err, np.nan)
+        norm_pull = np.where(~spectrum.mask, (flux - model_total) / safe_err, np.nan)
+
+        flux_dens_unit = u.Unit("erg / (cm2 s AA)")
+        synth_tbl = QTable()
+        synth_tbl["WAVE_REST"] = wave * u.AA
+        synth_tbl["FLUX_OBS"] = (flux * scale) * flux_dens_unit
+        synth_tbl["FLUX_ERR"] = (err * scale) * flux_dens_unit
+        synth_tbl["MASK"] = np.asarray(spectrum.mask, dtype=bool)
+        synth_tbl["CONT_POWERLAW"] = (cont_pl * scale) * flux_dens_unit
+        synth_tbl["CONT_FEII"] = (cont_feii * scale) * flux_dens_unit
+        synth_tbl["CONT_LOCAL"] = (comp_local_cont * scale) * flux_dens_unit
+        synth_tbl["COMP_NARROW"] = (comp_narrow * scale) * flux_dens_unit
+        synth_tbl["COMP_BROAD"] = (comp_broad * scale) * flux_dens_unit
+        synth_tbl["COMP_OUTFLOW"] = (comp_outflow * scale) * flux_dens_unit
+        synth_tbl["MODEL_TOTAL"] = (model_total * scale) * flux_dens_unit
+        synth_tbl["NORM_PULL"] = norm_pull
+        synth_tbl.meta["EXTNAME"] = "SYNTH_SPEC"
+        return synth_tbl
+
+    @staticmethod
+    def write_mef_fits(result: Any, output_path: Union[str, Path]) -> Path:
+        """
+        Writes the 3-HDU Multi-Extension FITS file:
+          HDU 0: Primary Header (provenance, cosmology, demographics, CONF_FLG bitmask)
+          HDU 1: LINE_CATALOG (row-per-line parameters QTable)
+          HDU 2: SYNTH_SPEC (1D synthetic model arrays QTable)
+        """
+        out_path = Path(output_path)
+        primary_hdu = fits.PrimaryHDU()
+        hdr = primary_hdu.header
+
+        m = result.metrics or {}
+        hdr["PIPELINE"] = ("ICARUS v3.4.0", "Spectroscopic minimization engine")
+        hdr["AUTHOR"] = ("Joseph Havens", "University of Kansas")
+        hdr["DATE_RUN"] = (
+            datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "UTC execution timestamp",
+        )
+        hdr["TARGETID"] = (str(result.spectrum.target.target_id), "Target identifier")
+        hdr["Z_SYS"] = (float(result.spectrum.target.redshift), "Systemic redshift")
+        hdr["SCL_FAC"] = (
+            float(result.spectrum.flux_scale_factor),
+            "Internal O(1) flux normalization factor",
+        )
+        hdr["CONF_FLG"] = (
+            int(result.confidence_flag),
+            "Bitmask confidence flag (0=Clean)",
+        )
+
+        def _set_safe_float(key: str, val: Any, comment: str):
+            try:
+                if val is not None and np.isfinite(float(val)) and float(val) > 0:
+                    hdr[key] = (round(float(val), 4), comment)
+            except (TypeError, ValueError):
+                pass
+
+        if (
+            "M_BH_Msun" in m
+            and np.isfinite(m.get("M_BH_Msun", np.nan))
+            and m["M_BH_Msun"] > 0
+        ):
+            hdr["LOG_MBH"] = (
+                round(float(np.log10(m["M_BH_Msun"])), 3),
+                "log10(M_BH / M_sun)",
+            )
+            hdr["MBH_CAL"] = (
+                str(m.get("M_BH_Calibrator", "None"))[:16],
+                "Virial mass calibrator",
+            )
+
+        if (
+            "L_bol_erg_s" in m
+            and np.isfinite(m.get("L_bol_erg_s", np.nan))
+            and m["L_bol_erg_s"] > 0
+        ):
+            hdr["LOG_LBOL"] = (
+                round(float(np.log10(m["L_bol_erg_s"])), 3),
+                "log10(L_bol / erg s^-1)",
+            )
+
+        _set_safe_float("LAM_EDD", m.get("lambda_Edd"), "Eddington ratio L_bol / L_Edd")
+        _set_safe_float("R_FEII", m.get("R_FeII"), "Optical Fe II / H_beta_broad ratio")
+        _set_safe_float(
+            "SFR_VAL",
+            m.get("SFR_uncorrected_Msun_yr"),
+            "Star formation rate [M_sun/yr]",
+        )
+
+        line_tbl = (
+            result.line_table
+            if result.line_table is not None
+            else ResultWriter.build_line_catalog_table(
+                result.spectrum, result.complex_fits, result.raw_params
+            )
+        )
+        synth_tbl = (
+            result.synth_table
+            if result.synth_table is not None
+            else ResultWriter.build_synthetic_spectrum_table(
+                result.spectrum,
+                result.continuum_eval,
+                result.feii_eval,
+                result.complex_fits,
+            )
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=AstropyWarning)
+            hdu_lines = fits.table_to_hdu(line_tbl)
+            hdu_lines.name = "LINE_CATALOG"
+
+            hdu_synth = fits.table_to_hdu(synth_tbl)
+            hdu_synth.name = "SYNTH_SPEC"
+
+            hdul = fits.HDUList([primary_hdu, hdu_lines, hdu_synth])
+            hdul.writeto(out_path, overwrite=True)
+
+        log.info(
+            f"[{result.spectrum.target.target_id}] Wrote 3-HDU MEF FITS to {out_path.name}"
+        )
+        return out_path
+
+    @staticmethod
+    def write_flat_ecsv(result: Any, output_path: Union[str, Path]) -> Path:
+        """
+        Writes a 1-row Extended CSV (ECSV) catalog containing all merged line
+        parameters and derived demographics for survey-wide cross-matching.
+        """
+        out_path = Path(output_path)
+        out_table = QTable()
+
+        scale = result.spectrum.flux_scale_factor
+        integrated_flux_unit = u.Unit("erg / (cm2 s)")
+        source_dict = result.raw_params if result.raw_params else result.metrics
+
+        out_table.meta["EXTNAME"] = "ICARUS_CATALOG"
+        out_table.meta["TARGET"] = result.spectrum.target.target_id
+        out_table.meta["REDSHIFT"] = result.spectrum.target.redshift
+        out_table.meta["PIPELINE"] = "ICARUS v3.4.0"
+        out_table.meta["CONF_FLG"] = int(result.confidence_flag)
+
+        for key, value in source_dict.items():
+            if (
+                "TargetID" in key
+                or "Redshift" in key
+                or "Indicator" in key
+                or "Calibrator" in key
+                or isinstance(value, (bool, str))
+            ):
+                out_table[key] = [value]
+            elif "amplitude" in key or "erg_s" in key or "Msun" in key or "yr" in key:
+                true_val = value * scale if "amplitude" in key else value
+                if "amplitude" in key:
+                    out_table[key] = [true_val] * integrated_flux_unit
+                elif "erg_s" in key:
+                    out_table[key] = [true_val] * (u.erg / u.s)
+                elif "yr" in key:
+                    out_table[key] = [true_val] * (u.M_sun / u.yr)
+                elif "Msun" in key:
+                    out_table[key] = [true_val] * u.M_sun
+            else:
+                out_table[key] = [value]
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=AstropyWarning)
+            out_table.write(out_path, format="ascii.ecsv", overwrite=True)
+
+        return out_path
+"""
+logger.py
+
+Centralized logging architecture for ICARUS.
+Directs standard execution telemetry to a runfile while printing
+critical alerts and warnings to standard output.
+"""
+
+__project__ = "ICARUS"
+__author__ = "Joseph Havens"
+__version__ = "3.4.0"
+
+import logging
+import sys
+
+
+def get_icarus_logger(
+    name: str = "ICARUS", log_file: str = "icarus_run.log"
+) -> logging.Logger:
+    """
+    Initializes and returns the standard pipeline logger.
+    """
+    logger = logging.getLogger(name)
+
+    if not logger.handlers:
+        logger.setLevel(logging.INFO)
+
+        # Format for the permanent log file
+        file_formatter = logging.Formatter(
+            fmt="%(asctime)s | %(levelname)-8s | %(module)s:%(lineno)d | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        file_handler = logging.FileHandler(log_file, mode="a")
+        file_handler.setFormatter(file_formatter)
+        logger.addHandler(file_handler)
+
+        # Format for the terminal console
+        console_formatter = logging.Formatter(fmt="[%(levelname)s] %(message)s")
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(console_formatter)
+        logger.addHandler(console_handler)
+
+    return logger

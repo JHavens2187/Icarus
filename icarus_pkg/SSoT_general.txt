@@ -1,0 +1,74 @@
+================================================================================
+ICARUS v3.4 ARCHITECTURE SPECIFICATION: ROOT PACKAGE (icarus_pkg/)
+================================================================================
+Purpose:
+Serves as the top-level public API and execution entry point for the ICARUS
+Astropy-affiliated package. Bridges interactive Jupyter Notebook workflows
+("import icarus_pkg as ic") with high-throughput cluster multiprocessing via CLI.
+
+--------------------------------------------------------------------------------
+FILES TO IMPLEMENT IN THIS DIRECTORY
+--------------------------------------------------------------------------------
+
+1. __init__.py
+   - Role: Public namespace exposer and package initialization.
+   - Responsibilities:
+     * Expose core user-facing classes at the top level:
+       - Spectrum1D, Target (from .core.containers)
+       - IcarusConfig (from .core.config)
+       - AGNFitter, IcarusResult (from .api)
+       - get_icarus_logger (from .core.logger)
+     * Apply global Matplotlib headless/mathtext defaults on import by loading
+       .viz.style so interactive users automatically get Havens Aesthetic
+       Standard formatting.
+     * Define __version__ = "3.4.0" and __author__ = "Joseph Havens".
+
+2. api.py
+   - Role: Object-oriented Python interface (replaces the monolithic procedural
+     loop of v3.3 main.py).
+   - Classes & Responsibilities:
+     * AGNFitter(spectrum: Spectrum1D, preset: str | Path | IcarusConfig, **overrides):
+       - Stateless, picklable orchestrator class.
+       - Resolves `preset` (e.g., "jwst_nirspec_prism", "jwst_nirspec_medium", or
+         a custom YAML path) via `importlib.resources` from `icarus_pkg/presets/`.
+       - Executes the full fit pipeline via `fitter.fit() -> IcarusResult`:
+         1) Loads the vacuum master line table from `icarus_pkg/data/`.
+         2) Runs Stage 1 Two-Pass Global Continuum + Fe II Template Cascade.
+         3) Groups lines dynamically into `LineComplex` slices and verifies
+            `in_bounds` and pixel-core validity.
+         4) Runs Stage 2 Local Kinematic Decomposition with BIC model selection
+            and physical broad-line vetoes.
+         5) Computes 5-pixel boxcar error scaling and 3-sigma upper limits.
+         6) Invokes `DemographicsCalculator` for single-epoch virial M_BH,
+            L_bol, lambda_Edd, R_FeII, BPT ratios, EWs, and SFRs.
+         7) Compiles the additive integer `confidence_flag` bitmask.
+     * IcarusResult:
+       - Immutable result container returned by `AGNFitter.fit()`.
+       - Holds: `spectrum`, `config`, `continuum_result`, `complex_results`,
+         `line_table` (HDU 1 QTable), `synth_table` (HDU 2 QTable), `metrics`
+         (demographics dict), and `confidence_flag`.
+       - Methods:
+         * `result.plot(save_path: Path | str, show: bool = False)`: Invokes
+           `DiagnosticPlotter` to render the 5-panel diagnostic PDF.
+         * `result.to_fits(save_path: Path | str)`: Invokes `core.io` to write
+           the standard 3-HDU Multi-Extension FITS file.
+         * `result.to_ecsv(save_path: Path | str)`: Exports flat 1-row target
+           summary for survey aggregation.
+         * `result.summary() -> str`: Returns a formatted executive ASCII table
+           of converged lines, M_BH, L_bol, lambda_Edd, and reduced chi-square
+           for terminal/Jupyter inspection.
+
+3. cli.py
+   - Role: Command-line interface and ProcessPoolExecutor cluster orchestrator.
+   - Responsibilities:
+     * Retain Click CLI flags (`--catalog`, `--data`, `--config` or `--preset`,
+       `--output`, `--cores`, `--plot`, `--dry-run`, `--verbose`, `--dev`).
+     * Force synchronous single-core execution (`cores = 1`) whenever `--dev` is
+       passed so IPython/PDB interactive breakpoints do not collide across
+       subprocesses.
+     * Dispatch stateless `AGNFitter` tasks across `ProcessPoolExecutor`.
+     * Aggregate all individual target results at the end of a batch run into:
+       1) `ICARUS_Execution_Report.csv` (run telemetry & convergence status).
+       2) `ICARUS_Master_Survey_Catalog.ecsv` (and `.parquet`), combining all
+          1-row target summaries without hitting the 999-column FITS limit.
+================================================================================

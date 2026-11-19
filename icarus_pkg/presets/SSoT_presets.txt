@@ -1,0 +1,60 @@
+================================================================================
+ICARUS v3.4 ARCHITECTURE SPECIFICATION: SURVEY PRESETS (icarus_pkg/presets/)
+================================================================================
+Purpose:
+Contains pre-calibrated, survey-ready YAML configuration files so users can
+initialize `ic.AGNFitter(spec, preset="...")` or run `cli.py --preset ...`
+without manually tuning continuum windows, unit scales, or doublet matrices.
+
+--------------------------------------------------------------------------------
+FILES TO IMPLEMENT IN THIS DIRECTORY
+--------------------------------------------------------------------------------
+
+1. jwst_nirspec_medium.yaml (Primary JADES Grating Preset)
+   - Target Data: JWST NIRSpec Medium-Resolution Gratings (G140M, G235M, G395M)
+     and medium-grating coadds.
+   - Defaults:
+     * `wave_unit: "um"`
+     * `flux_unit: "1e-20 erg / (cm2 s AA)"`
+     * `resolution: "127.0 km / s"` (or `dispersion_curve: "jwst_nirspec_medium_disp.fits"`)
+     * `cont_type: "powerlaw_feii"`, `continuum_degree: 2`
+     * Full 11-window UV-to-NIR `continuum_windows` (1330 A to 21000 A) +
+       `feii_windows` ([2200, 2650], [4434, 4684]).
+     * Narrow sigma bounds: `[30.0, 450.0] km/s`; Broad sigma bounds:
+       `[800.0, 8000.0] km/s`.
+     * Full quantum `doublet_tying` matrix (`O_III_doublet`, `N_II_doublet`,
+       `S_II_doublet`, `O_II_doublet`, `C_IV_doublet`, `Mg_II_doublet`,
+       `S_III_doublet`: 9069/9531 locked at 1:2.47).
+
+2. jwst_nirspec_prism.yaml (Low-Resolution Wide-Band Prism Preset)
+   - Target Data: JWST NIRSpec Prism/Clear spectra (R ~ 30 - 300).
+   - Defaults:
+     * Uses `dispersion_curve: "jwst_nirspec_prism_disp.fits"` so the massive
+       instrumental broadening at 1-2 um (sigma_inst ~ 1500-3000 km/s) is
+       accounted for before evaluating broad-line BIC or deconvolving widths.
+     * Adjusts `narrow_merge_radius` to `60.0 A` to account for blended
+       `H_alpha + [N II]` and `[S II]` profiles at prism resolution.
+     * Ties `N_II_6583` and `H_alpha` kinematics tightly to prevent unresolved
+       blending degeneracies.
+
+3. jwst_nirspec_high.yaml (High-Resolution Grating Preset)
+   - Target Data: JWST NIRSpec G140H/G235H/G395H IFU and MSA spectra (R ~ 2700,
+     sigma_inst ~ 47 km/s).
+   - Defaults:
+     * Lowers `min_sigma` to `"15.0 km / s"` and `narrow_merge_radius` to
+       `15.0 A` to resolve fine `[O II] 3726/3729` density doublets and narrow
+       multi-component outflows.
+
+4. roman_wfi.yaml (Roman Space Telescope Grism Preset)
+   - Target Data: Nancy Grace Roman WFI grism spectroscopy (1.0 - 1.93 um,
+     R ~ 460 * lambda_um).
+   - Defaults:
+     * Configured for rest-frame optical/NIR emission lines at z ~ 1 - 3.
+
+5. sdss_boss.yaml (Rest-Frame Optical Benchmark Preset)
+   - Target Data: SDSS-I/II and BOSS optical AGN spectra (3600 - 10400 A,
+     R ~ 2000, `flux_unit: "1e-17 erg / (cm2 s AA)"`, `wave_unit: "AA"`).
+   - Defaults:
+     * Optimized for classical Boroson & Green (1992) optical Fe II + H_beta +
+       [O III] + H_alpha decomposition and benchmark validation.
+================================================================================

@@ -1,0 +1,30 @@
+# ==============================================================================
+# ICARUS v3.4 Preset: JWST NIRSpec Prism/Clear (R ~ 30 - 300)
+# Uses explicit wavelength-dependent prism dispersion curve to prevent artificial
+# instrumental broadening of narrow nebular cores.
+# ==============================================================================
+globals:
+  line_table: "icarus_master_lines.fits"
+  lines: "all"
+  wave_unit: "um"
+  flux_unit: "1e-20 erg / (cm2 s AA)"
+  resolution: "1800.0 km / s"
+  dispersion_curve: "jwst_nirspec_prism_disp.fits"
+  column_mapping:
+    wave: "WAVE"
+    flux: "FLUX"
+    err: "ERR"
+  H0: 70.0
+  Om0: 0.3
+  fitting:
+    cont_type: "powerlaw_feii"
+    continuum_degree: 2
+    enable_feii: true
+    cont_width: "600.0 Angstrom"
+    center: "constrained"
+    snr_threshold: 3.0
+    min_sigma: "60.0 km / s"
+    max_sigma: "600.0 km / s"
+    broad_kinematics:
+      min_sigma: "1200.0 km / s"
+      max_sigma: "8500.0 km / s"

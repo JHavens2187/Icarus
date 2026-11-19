@@ -1,0 +1,150 @@
+# ==============================================================================
+# ICARUS v3.4 Preset: JWST NIRSpec High-Resolution Gratings (R ~ 2700)
+# ==============================================================================
+globals:
+  line_table: "icarus_master_lines.fits"
+  lines: "all"
+  wave_unit: "um"
+  flux_unit: "1e-20 erg / (cm2 s AA)"
+  resolution: "110.0 km / s"
+  dispersion_curve: "jwst_nirspec_high_disp.fits"
+  column_mapping:
+    wave: "WAVE"
+    flux: "FLUX"
+    err: "ERR"
+  H0: 70.0
+  Om0: 0.3
+  fitting:
+    cont_type: "powerlaw_feii"
+    continuum_degree: 2
+    enable_feii: true
+    cont_width: "400.0 Angstrom"
+    center: "constrained"
+    snr_threshold: 3.0
+    min_sigma: "20.0 km / s"
+    max_sigma: "400.0 km / s"
+    broad_kinematics:
+      min_sigma: "800.0 km / s"
+      max_sigma: "8000.0 km / s"# ==============================================================================
+# ICARUS v3.4 Preset: JWST NIRSpec Medium-Resolution Gratings (G140M/G235M/G395M)
+# Optimized for JADES DR3/v4 (DJA & MAST), CEERS, MEGA, and COSMOS-3D coadds.
+# ==============================================================================
+globals:
+  line_table: "icarus_master_lines.fits"
+  lines: "all"
+  wave_unit: "um"
+  flux_unit: "1e-20 erg / (cm2 s AA)"
+  resolution: "300.0 km / s"
+  dispersion_curve: "jwst_nirspec_medium_disp.fits"
+  column_mapping:
+    wave: "WAVE"
+    flux: "FLUX"
+    err: "ERR"
+  H0: 70.0
+  Om0: 0.3
+  fitting:
+    cont_type: "powerlaw_feii"
+    continuum_degree: 2
+    enable_feii: true
+    cont_width: "500.0 Angstrom"
+    center: "constrained"
+    snr_threshold: 3.0
+    min_sigma: "30.0 km / s"
+    max_sigma: "450.0 km / s"
+    broad_kinematics:
+      min_sigma: "800.0 km / s"
+      max_sigma: "8000.0 km / s"
+
+setups:
+  G140M:
+    resolution: "290.0 km / s"
+    dispersion_curve: "jwst_nirspec_medium_disp.fits"
+  G235M:
+    resolution: "285.0 km / s"
+    dispersion_curve: "jwst_nirspec_medium_disp.fits"
+  G395M:
+    resolution: "280.0 km / s"
+    dispersion_curve: "jwst_nirspec_medium_disp.fits"# ==============================================================================
+# ICARUS v3.4 Preset: JWST NIRSpec Prism/Clear (R ~ 30 - 300)
+# Uses explicit wavelength-dependent prism dispersion curve to prevent artificial
+# instrumental broadening of narrow nebular cores.
+# ==============================================================================
+globals:
+  line_table: "icarus_master_lines.fits"
+  lines: "all"
+  wave_unit: "um"
+  flux_unit: "1e-20 erg / (cm2 s AA)"
+  resolution: "1800.0 km / s"
+  dispersion_curve: "jwst_nirspec_prism_disp.fits"
+  column_mapping:
+    wave: "WAVE"
+    flux: "FLUX"
+    err: "ERR"
+  H0: 70.0
+  Om0: 0.3
+  fitting:
+    cont_type: "powerlaw_feii"
+    continuum_degree: 2
+    enable_feii: true
+    cont_width: "600.0 Angstrom"
+    center: "constrained"
+    snr_threshold: 3.0
+    min_sigma: "60.0 km / s"
+    max_sigma: "600.0 km / s"
+    broad_kinematics:
+      min_sigma: "1200.0 km / s"
+      max_sigma: "8500.0 km / s"# ==============================================================================
+# ICARUS v3.4 Preset: Nancy Grace Roman Wide Field Instrument (WFI) Grism (R ~ 600)
+# ==============================================================================
+globals:
+  line_table: "icarus_master_lines.fits"
+  lines: "all"
+  wave_unit: "AA"
+  flux_unit: "1e-17 erg / (cm2 s AA)"
+  resolution: "500.0 km / s"
+  column_mapping:
+    wave: "WAVELENGTH"
+    flux: "FLUX"
+    err: "ERROR"
+  H0: 70.0
+  Om0: 0.3
+  fitting:
+    cont_type: "powerlaw_feii"
+    continuum_degree: 2
+    enable_feii: true
+    cont_width: "500.0 Angstrom"
+    center: "constrained"
+    snr_threshold: 3.0
+    min_sigma: "40.0 km / s"
+    max_sigma: "450.0 km / s"
+    broad_kinematics:
+      min_sigma: "900.0 km / s"
+      max_sigma: "8000.0 km / s"# ==============================================================================
+# ICARUS v3.4 Preset: SDSS / eBOSS Optical Spectroscopy (R ~ 2000)
+# Automatically maps SDSS `loglam` (log10 AA) and `ivar` (inverse variance).
+# ==============================================================================
+globals:
+  line_table: "icarus_master_lines.fits"
+  lines: "all"
+  wave_unit: "AA"
+  flux_unit: "1e-17 erg / (cm2 s AA)"
+  resolution: "150.0 km / s"
+  column_mapping:
+    loglam: "loglam"
+    flux: "flux"
+    ivar: "ivar"
+    mask: "and_mask"
+  H0: 70.0
+  Om0: 0.3
+  fitting:
+    cont_type: "powerlaw_feii"
+    continuum_degree: 2
+    enable_feii: true
+    cont_width: "500.0 Angstrom"
+    center: "constrained"
+    snr_threshold: 3.0
+    min_sigma: "30.0 km / s"
+    max_sigma: "450.0 km / s"
+    broad_kinematics:
+      min_sigma: "800.0 km / s"
+      max_sigma: "8000.0 km / s"
