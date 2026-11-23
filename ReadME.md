@@ -11,7 +11,7 @@
 
 ## Overview
 
-**ICARUS** (*Integrated Cosmic Analysis Research Utility for Spectroscopy*, `icarus_pkg`) is a high-throughput Python spectroscopic fitting engine built to decompose blended Active Galactic Nuclei (AGN) and host-galaxy spectra from modern surveys such as **JWST/NIRSpec** (JADES, MEGA, COSMOS-3D), **Roman/WFI**, and **SDSS/BOSS**.
+**ICARUS** (`icarus_pkg`) is a high-throughput Python spectroscopic fitting engine built to decompose blended Active Galactic Nuclei (AGN) and host-galaxy spectra from modern surveys such as **JWST/NIRSpec** (JADES, MEGA, COSMOS-3D), **Roman/WFI**, and **SDSS/BOSS**.
 
 Legacy spectral fitters often force a trade-off between slow Bayesian MCMC sampling that struggles to scale across large survey catalogs and uncoupled Gaussian fits that suffer from broad-vs-narrow line degeneracy. ICARUS bridges this gap with a **two-stage physics-coupled cascade**, automated **$\Delta\mathrm{BIC}$ model arbitration**, and **shared-memory multiprocessing** optimized for both local workstations and SLURM High-Performance Computing (HPC) clusters.
 
@@ -22,14 +22,14 @@ Legacy spectral fitters often force a trade-off between slow Bayesian MCMC sampl
 ## Key Capabilities
 
 * **Two-Pass Global Continuum Cascade (Stage 1):**
-  * Dynamically scales flux arrays to $\mathcal{O}(1)$ space via $10^{\lfloor \log_{10}(\mathrm{median\ flux}) \rfloor}$ to prevent floating-point underflow on faint high-$z$ spectra ($\sim 10^{-20}\ \mathrm{erg\,s^{-1}\,cm^{-2}\,\AA^{-1}}$).
+  * Dynamically scales flux arrays to $\mathcal{O}(1)$ space via $10^{\lfloor \log_{10}(\mathrm{median\ flux}) \rfloor}$ to prevent floating-point underflow on faint high- $z$ spectra ($\sim 10^{-20}\ \mathrm{erg\,s^{-1}\,cm^{-2}\,\AA^{-1}}$).
   * **Pass 1** models the global AGN accretion-disk power-law, host starlight envelope, and optically thick Balmer recombination continuum ($3646\ \mathrm{\AA}$ edge).
-  * **Pass 2** fits FFT-convolved UV and optical $\mathrm{Fe\,II}$ pseudo-continua on a uniform logarithmic velocity grid, anchored locally by outer-25% window medians.
+  * **Pass 2** fits FFT-convolved UV and optical $\mathrm{Fe II}$ pseudo-continua on a uniform logarithmic velocity grid, anchored locally by outer-25% window medians.
 * **Physics-Coupled Emission-Line Engine (Stage 2):**
   * Simultaneously fits up to **22 rest-frame UV/Optical/NIR spectral complexes** ($1500\text{--}13000\ \mathrm{\AA}$) in relative velocity space ($\Delta v$) using Levenberg-Marquardt (`lmfit`) optimization.
   * Enforces **quantum-mechanical doublet flux ratios** ($[\mathrm{O\,III}]\,\lambda\lambda 5007,4959 = 2.98$, $[\mathrm{N\,II}]\,\lambda\lambda 6583,6548 = 2.95$) and couples systemic narrow-line velocity offsets ($\Delta v_{\mathrm{narrow}}$).
 * **Automated Model Arbitration & Speed Gatekeeper:**
-  * Evaluates nested kinematic models (Narrow-Only vs. Narrow + $[\mathrm{O\,III}]$ Biconical Outflow Wing vs. Broad BLR) using a strict **$\Delta\mathrm{BIC} \leq -10$** threshold paired with physical peak/width vetoes to eliminate false-positive broad lines.
+  * Evaluates nested kinematic models (Narrow-Only vs. Narrow + $[\mathrm{O III}]$ Biconical Outflow Wing vs. Broad BLR) using a strict **$\Delta\mathrm{BIC} \leq -10$** threshold paired with physical peak/width vetoes to eliminate false-positive broad lines.
   * A **$2\sigma$ Speed Gatekeeper** pre-screens weak or absent complexes before launching multi-component optimization, deriving $3\sigma$ analytical upper limits from local boxcar RMS for non-detections.
 * **Automated Virial Waterfall & Nebular Diagnostics:**
   * Deconvolves wavelength-dependent instrumental LSF dispersion $R(\lambda_{\mathrm{obs}})$ to compute single-epoch **Virial Black Hole Masses** ($\log_{10}(M_{\mathrm{BH}}/M_\odot)$ via $\mathrm{H}\beta$, $\mathrm{H}\alpha$, $\mathrm{Mg\,II}$, blueshift-corrected $\mathrm{C\,IV}$, or $\mathrm{Pa}\beta$), **Bolometric Luminosities** ($\log L_{\mathrm{bol}}$), **Eddington Ratios** ($\lambda_{\mathrm{Edd}}$), narrow-line **SFR**, and **BPT** excitation classifications.
