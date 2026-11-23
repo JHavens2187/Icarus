@@ -154,7 +154,7 @@ Icarus/
 
 Feedback, bug reports, and feature requests are very appreciated!
 
-* **Feedback Form:** [Feedback form here!](https://forms.gle/f68dbRkJmVhE2g1d8)
+* **Feedback Form:** [Feedback form here!](https://forms.gle/gGYFaB6957c1wc1X8)
 * **Issues & Pull Requests:** Open an issue or PR directly on [GitHub](https://github.com/JHavens2187/Icarus/issues).
 
 ---
