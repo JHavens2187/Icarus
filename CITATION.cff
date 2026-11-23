@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+title: "ICARUS: An AGN-Specialized Emission Line Fitting Pipeline for UV/Optical/NIR Spectroscopy"
+message: "If you use ICARUS in your research, please cite this software and the associated methods paper using the metadata below."
+type: software
+authors:
+  - family-names: Havens
+    given-names: Joseph
+    orcid: "https://orcid.org/0009-0006-9141-4381"
+    affiliation: "Department of Physics and Astronomy, University of Kansas"
+  - family-names: Kirkpatrick
+    given-names: Allison
+    orcid: "https://orcid.org/0000-0002-5537-8110"
+    affiliation: "Department of Physics and Astronomy, University of Kansas"
+repository-code: "https://github.com/JHavens2187/Icarus"
+url: "https://www.josephhavens.me"
+license: BSD-3-Clause
+version: "3.4.0"
+date-released: 2026-11-23
+keywords:
+  - astronomy
+  - astrophysics
+  - active-galactic-nuclei
+  - spectroscopy
+  - emission-lines
+  - jwst
+  - black-hole-mass
