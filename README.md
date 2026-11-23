@@ -23,7 +23,7 @@ Legacy spectral fitters often force a trade-off between slow Bayesian MCMC sampl
 
 * **Two-Pass Global Continuum Cascade (Stage 1):**
   * Dynamically scales flux arrays to $\mathcal{O}(1)$ space via $10^{\lfloor \log_{10}(\mathrm{median\ flux}) \rfloor}$ to prevent floating-point underflow on faint high- $z$ spectra ($\sim 10^{-20}\ \mathrm{erg\,s^{-1}\,cm^{-2}\,\AA^{-1}}$).
-  * **Pass 1** models the global AGN accretion-disk power-law, host starlight envelope, and optically thick Balmer recombination continuum ($3646\ \mathrm{\AA}$ edge).
+  * **Pass 1** models the global AGN accretion-disk power-law, host starlight envelope, and Balmer Bound-Free continuum ($3646\ \mathrm{\AA}$ edge).
   * **Pass 2** fits FFT-convolved UV and optical $\mathrm{Fe II}$ pseudo-continua on a uniform logarithmic velocity grid, anchored locally by outer-25% window medians.
 * **Physics-Coupled Emission-Line Engine (Stage 2):**
   * Simultaneously fits up to **22 rest-frame UV/Optical/NIR spectral complexes** ($1500\text{--}13000\ \mathrm{\AA}$) in relative velocity space ($\Delta v$) using Levenberg-Marquardt (`lmfit`) optimization.
@@ -145,7 +145,10 @@ Icarus/
 │   └── viz/                # 5-panel diagnostic plotter, BPT plane, MathText ion typography, & rcParams styling
 ├── pyproject.toml          # Build metadata & package entry points
 ├── requirements.txt        # Core dependencies
+├── CITATION.cff
+├── README.md
 └── LICENSE                 # BSD 3-Clause License
+
 ```
 
 ---
