@@ -4,7 +4,7 @@
 
 [![Version](https://img.shields.io/badge/version-3.4.0-blue.svg)](https://github.com/JHavens2187/Icarus)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-green.svg)](LICENSE)
 [![Astropy](https://img.shields.io/badge/powered%20by-Astropy-orange.svg)](https://www.astropy.org/)
 
 ---
@@ -145,7 +145,7 @@ Icarus/
 │   └── viz/                # 5-panel diagnostic plotter, BPT plane, MathText ion typography, & rcParams styling
 ├── pyproject.toml          # Build metadata & package entry points
 ├── requirements.txt        # Core dependencies
-└── LICENSE                 # MIT License
+└── LICENSE                 # BSD 3-Clause License
 ```
 
 ---
@@ -154,7 +154,7 @@ Icarus/
 
 Feedback, bug reports, and feature requests are very appreciated!
 
-* **Feedback Form:** [Feedback form here!](https://forms.gle/gGYFaB6957c1wc1X8)
+* **Feedback Form:** [Feedback form here!](https://forms.gle/f68dbRkJmVhE2g1d8)
 * **Issues & Pull Requests:** Open an issue or PR directly on [GitHub](https://github.com/JHavens2187/Icarus/issues).
 
 ---
